@@ -47,10 +47,7 @@ export class LambdaConstruct extends Construct {
       timeout: cdk.Duration.seconds(30),
       environment: commonEnv,
       bundling: {
-        externalModules: [
-          '@aws-sdk/client-bedrock-agentcore',
-          '@aws-sdk/client-bedrock-agentcore-control'
-        ]
+        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.ingestFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
@@ -62,10 +59,7 @@ export class LambdaConstruct extends Construct {
       timeout: cdk.Duration.seconds(30),
       environment: commonEnv,
       bundling: {
-        externalModules: [
-          '@aws-sdk/client-bedrock-agentcore',
-          '@aws-sdk/client-bedrock-agentcore-control'
-        ]
+        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.recallFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
@@ -80,10 +74,7 @@ export class LambdaConstruct extends Construct {
         MODEL_ID: props.modelId || 'anthropic.claude-3-haiku-20240307-v1:0',
       },
       bundling: {
-        externalModules: [
-          '@aws-sdk/client-bedrock-agentcore',
-          '@aws-sdk/client-bedrock-agentcore-control'
-        ]
+        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.projectExtractorFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
