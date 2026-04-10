@@ -79,8 +79,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
               },
             })
           )
-          .then((r) => ({ key: q.key, records: toMemoryRecords(r.memoryRecordSummaries || []) }))
-          .catch((err) => {
+          .then((r: any) => ({ key: q.key, records: toMemoryRecords(r.memoryRecordSummaries || []) }))
+          .catch((err: any) => {
             console.warn(`Failed to query ${q.namespace}:`, err.message);
             return { key: q.key, records: [] };
           })
