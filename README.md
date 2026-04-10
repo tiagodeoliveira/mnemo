@@ -71,6 +71,7 @@ mnemo/
       commands/
         push.ts             Send turns to API
         recall.ts           Fetch memories from API
+        install-hooks.ts    Install config + Claude Code hooks
   hooks/                    Claude Code hook scripts
     session-start.sh        Recall memories at session start
     prompt-submit.sh        Batch and push turns during session
@@ -124,21 +125,34 @@ aws apigateway get-api-key --api-key <API_KEY_ID> --include-value --query 'value
 
 ## Configure
 
-### CLI setup
-
-Build and install the CLI:
+### 5. Build the CLI and install
 
 ```bash
 cd cli && npm run build
+npm link -w cli
 ```
 
-Create the config file:
+This makes the `mnemo` command available globally.
+
+### 6. Run the installer
 
 ```bash
-node dist/index.js init
+mnemo install
 ```
 
-This creates `~/.mnemo/config.json`. Edit it with your deploy outputs:
+This does two things:
+- Creates `~/.mnemo/config.json` with placeholder values
+- Installs Claude Code hooks into `~/.claude/settings.json` (SessionStart for recall, UserPromptSubmit for push)
+
+If you cloned mnemo to a non-standard location, pass the hooks directory explicitly:
+
+```bash
+mnemo install --hooks-dir /path/to/mnemo/hooks
+```
+
+### 7. Edit the mnemo config
+
+Open `~/.mnemo/config.json` and fill in the values from the deploy outputs:
 
 ```json
 {
@@ -154,48 +168,7 @@ This creates `~/.mnemo/config.json`. Edit it with your deploy outputs:
 - `workstation` — friendly name for this machine. Defaults to hostname if omitted.
 - `visible` — when `true`, recalled memories are shown as markdown in the conversation. When `false`, they're injected as a silent JSON system message.
 
-To make `mnemo` available globally:
-
-```bash
-npm link -w cli
-```
-
-### Claude Code hooks
-
-Add the hooks to your Claude Code settings (`~/.claude/settings.json`). See `hooks/settings.example.json` for the structure:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /absolute/path/to/mnemo/hooks/session-start.sh",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash /absolute/path/to/mnemo/hooks/prompt-submit.sh",
-            "timeout": 10
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Replace `/absolute/path/to/mnemo` with the actual path. The push hook batches every 5 prompts by default — set `MNEMO_BATCH_SIZE` environment variable to change it.
+The push hook batches every 5 prompts by default — set `MNEMO_BATCH_SIZE` environment variable to change it.
 
 ## Usage
 

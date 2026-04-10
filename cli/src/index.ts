@@ -3,10 +3,8 @@ import { Command } from 'commander';
 import { loadConfig } from './config';
 import { executePush } from './commands/push';
 import { executeRecall, formatRecallOutput } from './commands/recall';
+import { installHooks } from './commands/install-hooks';
 import { detectProject } from './detect-project';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 const program = new Command();
 
@@ -68,32 +66,31 @@ program
   });
 
 program
-  .command('init')
-  .description('Create default config file')
-  .action(() => {
-    const configDir = path.join(os.homedir(), '.mnemo');
-    const configPath = path.join(configDir, 'config.json');
+  .command('install')
+  .description('Create mnemo config and install Claude Code hooks')
+  .option('--hooks-dir <path>', 'Path to hooks directory')
+  .action((opts) => {
+    try {
+      const result = installHooks({
+        hooksDir: opts.hooksDir,
+      });
 
-    if (fs.existsSync(configPath)) {
-      console.log(`Config already exists at ${configPath}`);
-      return;
+      if (result.configCreated) {
+        console.log(`Created mnemo config at ${result.mnemoConfigPath}`);
+        console.log('Edit it with your API URL and key from the CDK deploy output.\n');
+      } else {
+        console.log(`mnemo config already exists at ${result.mnemoConfigPath}\n`);
+      }
+
+      if (result.hooksInstalled) {
+        console.log('Installed Claude Code hooks (SessionStart + UserPromptSubmit).');
+      } else {
+        console.log('Claude Code hooks already installed — skipped.');
+      }
+    } catch (err: any) {
+      process.stderr.write(`mnemo install error: ${err.message}\n`);
+      process.exit(1);
     }
-
-    fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          apiUrl: 'https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/v1',
-          apiKey: 'YOUR_API_KEY',
-          workstation: os.hostname(),
-          defaults: { visible: true },
-        },
-        null,
-        2
-      )
-    );
-    console.log(`Config created at ${configPath} — edit it with your API details.`);
   });
 
 program.parse();
