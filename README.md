@@ -119,6 +119,14 @@ Note the outputs:
 
 ### 4. Get the API key value
 
+List the stack outputs (API URL and API key ID):
+
+```bash
+aws cloudformation describe-stacks --stack-name MnemoStack --query 'Stacks[0].Outputs' --output table
+```
+
+Then retrieve the actual API key value using the API key ID from the output:
+
 ```bash
 aws apigateway get-api-key --api-key <API_KEY_ID> --include-value --query 'value' --output text
 ```
