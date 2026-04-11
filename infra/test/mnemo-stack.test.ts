@@ -17,9 +17,9 @@ describe('MnemoStack', () => {
     template.resourceCountIs('AWS::SNS::Topic', 1);
     template.resourceCountIs('AWS::S3::Bucket', 1);
     template.resourceCountIs('AWS::BedrockAgentCore::Memory', 1);
-    // 3 app lambdas + 1 auto-delete-objects = 4 with nodejs22.x
+    // 3 app lambdas + 1 observability-setup + 1 cr.Provider framework + 1 auto-delete-objects = 6 with nodejs22.x
     template.resourcePropertiesCountIs('AWS::Lambda::Function', {
       Runtime: 'nodejs22.x',
-    }, 4);
+    }, 6);
   });
 });

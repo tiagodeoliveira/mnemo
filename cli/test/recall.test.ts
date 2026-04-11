@@ -69,4 +69,22 @@ describe('formatRecallOutput', () => {
     const parsed = JSON.parse(output);
     expect(parsed.systemMessage).toBeDefined();
   });
+
+  it('extracts plain text from JSON preference content', () => {
+    const response = {
+      preferences: [
+        {
+          id: 'r1',
+          content: '{"context":"User said they like TS","preference":"Always use TypeScript","categories":["lang"]}',
+          score: 0.95,
+          createdAt: '',
+        },
+      ],
+      facts: [],
+      episodes: [],
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('- Always use TypeScript');
+    expect(output).not.toContain('"context"');
+  });
 });

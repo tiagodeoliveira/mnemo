@@ -2,8 +2,13 @@ import * as cdk from 'aws-cdk-lib';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import * as bedrockagentcore from 'aws-cdk-lib/aws-bedrockagentcore';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Construct } from 'constructs';
+import * as path from 'path';
 
 export interface MemoryConstructProps {
   memoryName: string;
@@ -111,5 +116,88 @@ export class MemoryConstruct extends Construct {
     memory.addDependency(executionRole.node.defaultChild as cdk.CfnResource);
 
     this.memoryId = memory.attrMemoryId;
+
+    const lambdaDir = path.join(__dirname, '..', 'lambda');
+
+    const observabilityFn = new NodejsFunction(this, 'ObservabilitySetupFn', {
+      entry: path.join(lambdaDir, 'observability-setup', 'index.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      timeout: cdk.Duration.minutes(2),
+      environment: {
+        AWS_ACCOUNT_ID: cdk.Stack.of(this).account,
+      },
+      bundling: {
+        externalModules: ['@aws-sdk/client-cloudwatch-logs'],
+      },
+    });
+
+    observabilityFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'logs:CreateLogGroup',
+          'logs:PutDeliverySource',
+          'logs:PutDeliveryDestination',
+          'logs:CreateDelivery',
+          'logs:GetDelivery',
+          'logs:DeleteDeliverySource',
+          'logs:DeleteDelivery',
+          'logs:DeleteDeliveryDestination',
+          'logs:DescribeDeliveries',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    observabilityFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['bedrock-agentcore:AllowVendedLogDeliveryForResource'],
+        resources: [`arn:aws:bedrock-agentcore:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:memory/*`],
+      })
+    );
+
+    observabilityFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'xray:PutResourcePolicy',
+          'xray:ListResourcePolicies',
+          'xray:GetTraceSegmentDestination',
+        ],
+        resources: ['*'],
+      })
+    );
+
+    new logs.CfnResourcePolicy(this, 'DeliveryLogPolicy', {
+      policyName: 'mnemo-agentcore-delivery',
+      policyDocument: JSON.stringify({
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'AllowDeliveryToAgentCoreLogs',
+            Effect: 'Allow',
+            Principal: { Service: 'delivery.logs.amazonaws.com' },
+            Action: ['logs:CreateLogStream', 'logs:PutLogEvents'],
+            Resource: [
+              `arn:aws:logs:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:log-group:/aws/vendedlogs/bedrock-agentcore/*:*`,
+            ],
+            Condition: { StringEquals: { 'aws:SourceAccount': cdk.Stack.of(this).account } },
+          },
+        ],
+      }),
+    });
+
+    const observabilityProvider = new cr.Provider(this, 'ObservabilityProvider', {
+      onEventHandler: observabilityFn,
+    });
+
+    const observability = new cdk.CustomResource(this, 'ObservabilitySetup', {
+      serviceToken: observabilityProvider.serviceToken,
+      properties: {
+        memoryArn: memory.attrMemoryArn,
+        memoryName: props.memoryName,
+      },
+    });
+
+    observability.node.addDependency(memory);
   }
 }

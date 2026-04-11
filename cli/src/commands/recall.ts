@@ -43,9 +43,21 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   return response.json() as Promise<RecallResponse>;
 }
 
+function extractText(content: string): string {
+  try {
+    const parsed = JSON.parse(content);
+    if (typeof parsed === 'object' && parsed !== null) {
+      return parsed.preference || parsed.text || parsed.summary || content;
+    }
+  } catch {
+    // not JSON, use as-is
+  }
+  return content;
+}
+
 function formatSection(title: string, records: MemoryRecord[]): string {
   if (records.length === 0) return '';
-  const items = records.map((r) => `- ${r.content}`).join('\n');
+  const items = records.map((r) => `- ${extractText(r.content)}`).join('\n');
   return `## ${title}\n${items}\n`;
 }
 
