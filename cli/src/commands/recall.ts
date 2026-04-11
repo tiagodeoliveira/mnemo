@@ -16,7 +16,6 @@ interface RecallResponse {
   preferences: MemoryRecord[];
   facts: MemoryRecord[];
   episodes: MemoryRecord[];
-  reflections: MemoryRecord[];
   project?: {
     name: string;
     memories: MemoryRecord[];
@@ -56,7 +55,6 @@ export function formatRecallOutput(response: RecallResponse, visible: boolean): 
   sections.push(formatSection('Preferences', response.preferences));
   sections.push(formatSection('Facts', response.facts));
   sections.push(formatSection('Episodes', response.episodes));
-  sections.push(formatSection('Reflections', response.reflections));
 
   if (response.project) {
     sections.push(formatSection(`Project: ${response.project.name}`, response.project.memories));

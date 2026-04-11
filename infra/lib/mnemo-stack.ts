@@ -14,7 +14,7 @@ export class MnemoStack extends cdk.Stack {
     super(scope, id, props);
 
     const memory = new MemoryConstruct(this, 'Memory', {
-      memoryName: 'mnemo-memory',
+      memoryName: 'mnemo_memory',
       actorId: props.actorId,
     });
 

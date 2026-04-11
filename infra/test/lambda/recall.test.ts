@@ -47,25 +47,24 @@ describe('recall lambda', () => {
     mockSend.mockResolvedValue(mockMemoryResponse([{ text: 'test fact', score: 0.9 }]));
   });
 
-  it('queries 4 namespaces without project', async () => {
+  it('queries 3 namespaces without project', async () => {
     const result = await handler(makeEvent(null));
     const body = JSON.parse(result.body);
 
     expect(result.statusCode).toBe(200);
-    expect(mockSend).toHaveBeenCalledTimes(4);
+    expect(mockSend).toHaveBeenCalledTimes(3);
     expect(body.project).toBeUndefined();
     expect(body.preferences).toBeDefined();
     expect(body.facts).toBeDefined();
     expect(body.episodes).toBeDefined();
-    expect(body.reflections).toBeDefined();
   });
 
-  it('queries 5 namespaces with project', async () => {
+  it('queries 4 namespaces with project', async () => {
     const result = await handler(makeEvent({ project: 'mnemo' }));
     const body = JSON.parse(result.body);
 
     expect(result.statusCode).toBe(200);
-    expect(mockSend).toHaveBeenCalledTimes(5);
+    expect(mockSend).toHaveBeenCalledTimes(4);
     expect(body.project).toBeDefined();
     expect(body.project.name).toBe('mnemo');
   });

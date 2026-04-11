@@ -4,88 +4,93 @@ import { Match, Template } from 'aws-cdk-lib/assertions';
 import { MemoryConstruct } from '../lib/memory-construct';
 
 describe('MemoryConstruct', () => {
-  it('creates custom resource, SNS topic, and S3 bucket', () => {
+  it('creates CfnMemory, SNS topic, and S3 bucket', () => {
     const app = new cdk.App();
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
     });
 
     const template = Template.fromStack(stack);
     template.resourceCountIs('AWS::SNS::Topic', 1);
     template.resourceCountIs('AWS::S3::Bucket', 1);
-    // cr.Provider creates a framework handler Lambda, and autoDeleteObjects
-    // creates another Lambda for bucket cleanup — 3 total
-    template.resourceCountIs('AWS::Lambda::Function', 3);
-    template.resourceCountIs('AWS::CloudFormation::CustomResource', 1);
+    template.resourceCountIs('AWS::BedrockAgentCore::Memory', 1);
   });
 
-  it('configures the memory provider Lambda with correct properties', () => {
+  it('configures all 4 memory strategies', () => {
     const app = new cdk.App();
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
     });
 
     const template = Template.fromStack(stack);
-    template.hasResourceProperties('AWS::Lambda::Function', {
-      Handler: 'index.handler',
-      Runtime: 'nodejs22.x',
-      Timeout: 600,
+    template.hasResourceProperties('AWS::BedrockAgentCore::Memory', {
+      MemoryStrategies: Match.arrayWith([
+        Match.objectLike({ UserPreferenceMemoryStrategy: { Name: 'UserPreferences' } }),
+        Match.objectLike({ SemanticMemoryStrategy: { Name: 'SemanticFacts' } }),
+        Match.objectLike({ EpisodicMemoryStrategy: { Name: 'EpisodicMemory' } }),
+        Match.objectLike({ CustomMemoryStrategy: { Name: 'ProjectContext' } }),
+      ]),
     });
   });
 
-  it('grants bedrock-agentcore and iam:PassRole permissions', () => {
+  it('creates execution role with correct trust and permissions', () => {
     const app = new cdk.App();
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
     });
 
     const template = Template.fromStack(stack);
-    template.hasResourceProperties('AWS::IAM::Policy', {
-      PolicyDocument: {
+    template.hasResourceProperties('AWS::IAM::Role', {
+      AssumeRolePolicyDocument: {
         Statement: Match.arrayWith([
           Match.objectLike({
-            Action: [
-              'bedrock-agentcore:CreateMemory',
-              'bedrock-agentcore:GetMemory',
-              'bedrock-agentcore:UpdateMemory',
-              'bedrock-agentcore:DeleteMemory',
-            ],
-            Effect: 'Allow',
-          }),
-          Match.objectLike({
-            Action: 'iam:PassRole',
-            Effect: 'Allow',
+            Principal: { Service: 'bedrock-agentcore.amazonaws.com' },
+            Action: 'sts:AssumeRole',
           }),
         ]),
       },
+      Policies: Match.arrayWith([
+        Match.objectLike({
+          PolicyDocument: {
+            Statement: Match.arrayWith([
+              Match.objectLike({
+                Action: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+                Effect: 'Allow',
+              }),
+              Match.objectLike({
+                Action: ['sns:Publish', 'sns:GetTopicAttributes'],
+                Effect: 'Allow',
+              }),
+            ]),
+          },
+        }),
+      ]),
     });
   });
 
-  it('passes resource properties to the custom resource', () => {
+  it('passes memory properties correctly', () => {
     const app = new cdk.App();
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
       eventExpiryDuration: 30,
     });
 
     const template = Template.fromStack(stack);
-    template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
-      memoryName: 'test-memory',
-      description: 'mnemo centralized AI memory',
-      eventExpiryDuration: 30,
-      actorId: 'test-actor',
+    template.hasResourceProperties('AWS::BedrockAgentCore::Memory', {
+      Name: 'test_memory',
+      EventExpiryDuration: 30,
     });
   });
 
@@ -94,13 +99,13 @@ describe('MemoryConstruct', () => {
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
     });
 
     const template = Template.fromStack(stack);
-    template.hasResourceProperties('AWS::CloudFormation::CustomResource', {
-      eventExpiryDuration: 90,
+    template.hasResourceProperties('AWS::BedrockAgentCore::Memory', {
+      EventExpiryDuration: 90,
     });
   });
 
@@ -109,7 +114,7 @@ describe('MemoryConstruct', () => {
     const stack = new cdk.Stack(app, 'TestStack');
 
     new MemoryConstruct(stack, 'Memory', {
-      memoryName: 'test-memory',
+      memoryName: 'test_memory',
       actorId: 'test-actor',
     });
 

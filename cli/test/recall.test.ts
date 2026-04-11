@@ -13,7 +13,6 @@ const sampleResponse = {
     { id: 'r2', content: 'Senior engineer working on distributed systems', score: 0.9, createdAt: '' },
   ],
   episodes: [],
-  reflections: [],
   project: {
     name: 'mnemo',
     memories: [

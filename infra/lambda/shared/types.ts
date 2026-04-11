@@ -27,7 +27,6 @@ export interface RecallResponse {
   preferences: MemoryRecord[];
   facts: MemoryRecord[];
   episodes: MemoryRecord[];
-  reflections: MemoryRecord[];
   project?: {
     name: string;
     memories: MemoryRecord[];

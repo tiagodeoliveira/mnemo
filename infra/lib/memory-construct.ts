@@ -1,12 +1,9 @@
 import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as cr from 'aws-cdk-lib/custom-resources';
-import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as bedrockagentcore from 'aws-cdk-lib/aws-bedrockagentcore';
 import { Construct } from 'constructs';
-import * as path from 'path';
 
 export interface MemoryConstructProps {
   memoryName: string;
@@ -33,51 +30,86 @@ export class MemoryConstruct extends Construct {
       lifecycleRules: [{ expiration: cdk.Duration.days(7) }],
     });
 
-    const providerFn = new NodejsFunction(this, 'MemoryProviderFn', {
-      entry: path.join(__dirname, '..', 'lambda', 'memory-provider', 'index.ts'),
-      handler: 'handler',
-      runtime: lambda.Runtime.NODEJS_22_X,
-      timeout: cdk.Duration.minutes(10),
-      bundling: {
-        externalModules: ['@aws-sdk/client-bedrock-agentcore-control'],
+    const executionRole = new iam.Role(this, 'MemoryExecutionRole', {
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
+      inlinePolicies: {
+        MemoryExecution: new iam.PolicyDocument({
+          statements: [
+            new iam.PolicyStatement({
+              actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
+              resources: ['*'],
+            }),
+            new iam.PolicyStatement({
+              actions: ['sns:Publish', 'sns:GetTopicAttributes'],
+              resources: [this.snsTopic.topicArn],
+            }),
+            new iam.PolicyStatement({
+              actions: ['s3:PutObject', 's3:GetObject', 's3:GetBucketLocation'],
+              resources: [this.payloadBucket.bucketArn, this.payloadBucket.arnForObjects('*')],
+            }),
+          ],
+        }),
       },
     });
 
-    providerFn.addToRolePolicy(
+    this.snsTopic.addToResourcePolicy(
       new iam.PolicyStatement({
-        actions: [
-          'bedrock-agentcore:CreateMemory',
-          'bedrock-agentcore:GetMemory',
-          'bedrock-agentcore:UpdateMemory',
-          'bedrock-agentcore:DeleteMemory',
-        ],
-        resources: ['*'],
+        actions: ['sns:Publish', 'sns:GetTopicAttributes'],
+        principals: [new iam.ArnPrincipal(executionRole.roleArn)],
+        resources: [this.snsTopic.topicArn],
       })
     );
 
-    providerFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['iam:PassRole'],
-        resources: ['*'],
-      })
-    );
-
-    const provider = new cr.Provider(this, 'MemoryProvider', {
-      onEventHandler: providerFn,
+    const memory = new bedrockagentcore.CfnMemory(this, 'Memory', {
+      name: props.memoryName,
+      description: 'mnemo centralized AI memory',
+      memoryExecutionRoleArn: executionRole.roleArn,
+      eventExpiryDuration: props.eventExpiryDuration ?? 90,
+      memoryStrategies: [
+        {
+          userPreferenceMemoryStrategy: {
+            name: 'UserPreferences',
+            namespaces: [`/preferences/{actorId}/`],
+          },
+        },
+        {
+          semanticMemoryStrategy: {
+            name: 'SemanticFacts',
+            namespaces: [`/facts/{actorId}/`],
+          },
+        },
+        {
+          episodicMemoryStrategy: {
+            name: 'EpisodicMemory',
+            namespaces: [`/episodes/{actorId}/`],
+            reflectionConfiguration: {
+              namespaces: [`/episodes/{actorId}/`],
+            },
+          },
+        },
+        {
+          customMemoryStrategy: {
+            name: 'ProjectContext',
+            configuration: {
+              selfManagedConfiguration: {
+                triggerConditions: [
+                  { messageBasedTrigger: { messageCount: 10 } },
+                  { timeBasedTrigger: { idleSessionTimeout: 300 } },
+                ],
+                invocationConfiguration: {
+                  topicArn: this.snsTopic.topicArn,
+                  payloadDeliveryBucketName: this.payloadBucket.bucketName,
+                },
+                historicalContextWindowSize: 50,
+              },
+            },
+          },
+        },
+      ],
     });
 
-    const memory = new cdk.CustomResource(this, 'Memory', {
-      serviceToken: provider.serviceToken,
-      properties: {
-        memoryName: props.memoryName,
-        description: 'mnemo centralized AI memory',
-        eventExpiryDuration: props.eventExpiryDuration ?? 90,
-        snsTopicArn: this.snsTopic.topicArn,
-        s3BucketName: this.payloadBucket.bucketName,
-        actorId: props.actorId,
-      },
-    });
+    memory.addDependency(executionRole.node.defaultChild as cdk.CfnResource);
 
-    this.memoryId = memory.getAttString('MemoryId');
+    this.memoryId = memory.attrMemoryId;
   }
 }

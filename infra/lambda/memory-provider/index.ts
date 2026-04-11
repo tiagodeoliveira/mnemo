@@ -27,13 +27,38 @@ async function waitForActive(memoryId: string): Promise<void> {
   throw new Error(`Timeout waiting for memory ${memoryId} to become ACTIVE`);
 }
 
+const CREATE_RETRIES = 3;
+const CREATE_RETRY_DELAY_MS = 15_000;
+
 async function onCreate(event: CloudFormationCustomResourceEvent): Promise<ProviderResponse> {
   const props = event.ResourceProperties;
 
+  // IAM role policies need time to propagate before AgentCore can validate them
+  let lastError: any;
+  for (let attempt = 0; attempt < CREATE_RETRIES; attempt++) {
+    if (attempt > 0) {
+      console.log(`Retry ${attempt}/${CREATE_RETRIES} after IAM propagation delay...`);
+      await new Promise((r) => setTimeout(r, CREATE_RETRY_DELAY_MS));
+    }
+    try {
+      return await createMemory(props);
+    } catch (err: any) {
+      lastError = err;
+      if (err.name === 'ValidationException' && err.message?.includes('Role does not have access')) {
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
+async function createMemory(props: any): Promise<ProviderResponse> {
   const response = await client.send(
     new CreateMemoryCommand({
       name: props.memoryName,
       description: props.description,
+      memoryExecutionRoleArn: props.memoryExecutionRoleArn,
       eventExpiryDuration: Number(props.eventExpiryDuration),
       memoryStrategies: [
         {
@@ -53,14 +78,13 @@ async function onCreate(event: CloudFormationCustomResourceEvent): Promise<Provi
             name: 'EpisodicMemory',
             namespaceTemplates: ['/episodes/{actorId}/'],
             reflectionConfiguration: {
-              namespaceTemplates: ['/reflections/{actorId}/'],
+              namespaceTemplates: ['/episodes/{actorId}/'],
             },
           },
         },
         {
           customMemoryStrategy: {
             name: 'ProjectContext',
-            namespaceTemplates: ['/projects/{actorId}/'],
             configuration: {
               selfManagedConfiguration: {
                 triggerConditions: [

@@ -18,7 +18,7 @@ mnemo sits between Claude Code and Bedrock AgentCore Memory through a REST API. 
 |---|---|---|---|
 | User Preferences | built-in | `/preferences/{actorId}/` | Coding style, standards, tool preferences |
 | Semantic Facts | built-in | `/facts/{actorId}/` | General knowledge and facts |
-| Episodic | built-in | `/episodes/{actorId}/` + `/reflections/{actorId}/` | Structured episodes with cross-episode reflections |
+| Episodic | built-in | `/episodes/{actorId}/` | Structured episodes with reflections (same namespace) |
 | Project Context | self-managed | `/projects/{actorId}/{projectName}/` | Architecture decisions, tech choices, project state |
 
 Built-in strategies are extracted automatically by AgentCore. The project context strategy is self-managed: AgentCore triggers an SNS notification, a Lambda reads the conversation payload from S3, uses a Bedrock model to extract project-specific facts, and writes them via `BatchCreateMemoryRecords`.

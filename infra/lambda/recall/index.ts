@@ -29,12 +29,7 @@ function buildQueries(actorId: string, project?: string): NamespaceQuery[] {
     {
       key: 'episodes',
       namespace: `/episodes/${actorId}/`,
-      searchQuery: 'recent work episodes, decisions, and context',
-    },
-    {
-      key: 'reflections',
-      namespace: `/reflections/${actorId}/`,
-      searchQuery: 'insights, patterns, and cross-project observations',
+      searchQuery: 'recent work episodes, decisions, reflections, and context',
     },
   ];
 
@@ -91,7 +86,6 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       preferences: [],
       facts: [],
       episodes: [],
-      reflections: [],
     };
 
     for (const result of results) {
