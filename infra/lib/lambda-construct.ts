@@ -74,7 +74,7 @@ export class LambdaConstruct extends Construct {
         MODEL_ID: props.modelId || 'anthropic.claude-3-haiku-20240307-v1:0',
       },
       bundling: {
-        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
+        nodeModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.projectExtractorFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);

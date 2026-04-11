@@ -63,16 +63,15 @@ describe('project-extractor lambda', () => {
 
   it('extracts project context and writes memory records', async () => {
     const s3Payload = {
-      events: [
-        {
-          payload: [
-            { conversational: { content: { text: 'Use DynamoDB for storage' }, role: 'USER' } },
-            { conversational: { content: { text: 'Good choice for single-table design' }, role: 'ASSISTANT' } },
-          ],
-          metadata: {
-            project: { stringValue: 'mnemo' },
-          },
-        },
+      requestId: 'req-1',
+      accountId: '123456789',
+      memoryId: 'mem-123',
+      actorId: 'tiago',
+      sessionId: 'session-1',
+      strategyId: 'ProjectContext-abc',
+      currentContext: [
+        { role: 'USER', content: { text: 'Use DynamoDB for storage in the mnemo project' }, eventId: 'e1' },
+        { role: 'ASSISTANT', content: { text: 'Good choice for single-table design' }, eventId: 'e1' },
       ],
     };
 
@@ -83,7 +82,12 @@ describe('project-extractor lambda', () => {
     mockBedrockSend.mockResolvedValue({
       body: new TextEncoder().encode(
         JSON.stringify({
-          content: [{ type: 'text', text: 'Decision: Use DynamoDB single-table design for storage.' }],
+          content: [
+            {
+              type: 'text',
+              text: 'PROJECT: mnemo\nFACTS:\nDecision: Use DynamoDB single-table design for storage.',
+            },
+          ],
         })
       ),
     });
@@ -93,7 +97,14 @@ describe('project-extractor lambda', () => {
       failedRecords: [],
     });
 
-    await handler(makeSnsEvent({ bucketName: 'payload-bucket', key: 'payloads/123.json' }));
+    await handler(
+      makeSnsEvent({
+        jobId: 'mem-123/ProjectContext-abc/tiago/session-1/123_req.json',
+        s3PayloadLocation: 's3://payload-bucket/payloads/123.json',
+        memoryId: 'mem-123',
+        strategyId: 'ProjectContext-abc',
+      })
+    );
 
     expect(mockS3Send).toHaveBeenCalledOnce();
     expect(mockBedrockSend).toHaveBeenCalledOnce();
@@ -103,13 +114,71 @@ describe('project-extractor lambda', () => {
     expect(batchCmd.input.records[0].namespaces).toContain('/projects/tiago/mnemo/');
   });
 
-  it('skips when no project metadata in events', async () => {
+  it('skips when LLM returns NONE for facts', async () => {
     const s3Payload = {
-      events: [
-        {
-          payload: [{ conversational: { content: { text: 'hello' }, role: 'USER' } }],
-          metadata: {},
-        },
+      actorId: 'tiago',
+      memoryId: 'mem-123',
+      sessionId: 'session-1',
+      currentContext: [{ role: 'USER', content: { text: 'hello' }, eventId: 'e1' }],
+    };
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(s3Payload)) },
+    });
+
+    mockBedrockSend.mockResolvedValue({
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'PROJECT: unknown\nFACTS: NONE' }],
+        })
+      ),
+    });
+
+    await handler(
+      makeSnsEvent({
+        jobId: 'job-1',
+        s3PayloadLocation: 's3://bucket/key.json',
+        memoryId: 'mem-123',
+        strategyId: 'strat-1',
+      })
+    );
+
+    expect(mockBedrockSend).toHaveBeenCalledOnce();
+    expect(mockAgentCoreSend).not.toHaveBeenCalled();
+  });
+
+  it('skips when conversation is empty', async () => {
+    const s3Payload = {
+      actorId: 'tiago',
+      memoryId: 'mem-123',
+      sessionId: 'session-1',
+      currentContext: [],
+    };
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(s3Payload)) },
+    });
+
+    await handler(
+      makeSnsEvent({
+        jobId: 'job-1',
+        s3PayloadLocation: 's3://bucket/key.json',
+        memoryId: 'mem-123',
+        strategyId: 'strat-1',
+      })
+    );
+
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    expect(mockAgentCoreSend).not.toHaveBeenCalled();
+  });
+
+  it('parses S3 URI correctly from SNS message', async () => {
+    const s3Payload = {
+      actorId: 'tiago',
+      memoryId: 'mem-123',
+      sessionId: 'session-1',
+      currentContext: [
+        { role: 'USER', content: { text: 'Working on mnemo, chose CDK over SAM' }, eventId: 'e1' },
       ],
     };
 
@@ -117,9 +186,30 @@ describe('project-extractor lambda', () => {
       Body: { transformToString: () => Promise.resolve(JSON.stringify(s3Payload)) },
     });
 
-    await handler(makeSnsEvent({ bucketName: 'bucket', key: 'key.json' }));
+    mockBedrockSend.mockResolvedValue({
+      body: new TextEncoder().encode(
+        JSON.stringify({
+          content: [{ type: 'text', text: 'PROJECT: mnemo\nFACTS:\nChose CDK over SAM for infrastructure' }],
+        })
+      ),
+    });
 
-    expect(mockBedrockSend).not.toHaveBeenCalled();
-    expect(mockAgentCoreSend).not.toHaveBeenCalled();
+    mockAgentCoreSend.mockResolvedValue({
+      successfulRecords: [{ memoryRecordId: 'rec-1', status: 'SUCCEEDED' }],
+      failedRecords: [],
+    });
+
+    await handler(
+      makeSnsEvent({
+        jobId: 'job-1',
+        s3PayloadLocation: 's3://my-bucket/path/to/payload.json',
+        memoryId: 'mem-123',
+        strategyId: 'strat-1',
+      })
+    );
+
+    const s3Cmd = mockS3Send.mock.calls[0][0];
+    expect(s3Cmd.input.Bucket).toBe('my-bucket');
+    expect(s3Cmd.input.Key).toBe('path/to/payload.json');
   });
 });
