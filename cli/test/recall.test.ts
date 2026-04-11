@@ -87,4 +87,86 @@ describe('formatRecallOutput', () => {
     expect(output).toContain('- Always use TypeScript');
     expect(output).not.toContain('"context"');
   });
+
+  it('formats episodic content with title/use_cases/hints as markdown', () => {
+    const response = {
+      preferences: [],
+      facts: [],
+      episodes: [
+        {
+          id: 'e1',
+          content: JSON.stringify({
+            title: 'Debugging IAM Propagation',
+            use_cases: 'Applies when deploying AgentCore resources',
+            hints: 'Check both identity and resource policies',
+            confidence: '0.9',
+          }),
+          score: 0.85,
+          createdAt: '',
+        },
+      ],
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('### Debugging IAM Propagation');
+    expect(output).toContain('**Use cases:** Applies when deploying');
+    expect(output).toContain('**Hints:** Check both identity');
+    expect(output).toContain('**Confidence:** 0.9');
+    expect(output).not.toContain('"title"');
+  });
+
+  it('formats episodic content with situation/turns as markdown', () => {
+    const response = {
+      preferences: [],
+      facts: [],
+      episodes: [
+        {
+          id: 'e2',
+          content: JSON.stringify({
+            situation: 'User explained CfnMemory migration',
+            intent: 'Validate architectural decision',
+            assessment: 'Yes',
+            justification: 'Assistant confirmed understanding',
+            reflection: 'Direct acknowledgment was sufficient',
+            turns: [
+              {
+                situation: 'Explaining CfnMemory choice',
+                intent: 'Seek validation',
+                action: 'Provided affirmative response',
+                thought: 'Showed understanding of rationale',
+                assessmentAssistant: 'Validated successfully',
+                assessmentUser: 'No follow-up needed',
+              },
+            ],
+          }),
+          score: 0.8,
+          createdAt: '',
+        },
+      ],
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('**Situation:** User explained CfnMemory migration');
+    expect(output).toContain('**Intent:** Validate architectural decision');
+    expect(output).toContain('**Assessment:** Yes');
+    expect(output).toContain('**Reflection:** Direct acknowledgment was sufficient');
+    expect(output).toContain('**Turns:**');
+    expect(output).toContain('**Action:** Provided affirmative response');
+    expect(output).not.toContain('"situation"');
+  });
+
+  it('passes through non-JSON episode content as-is', () => {
+    const response = {
+      preferences: [],
+      facts: [],
+      episodes: [
+        {
+          id: 'e3',
+          content: 'Plain text episode about debugging session',
+          score: 0.7,
+          createdAt: '',
+        },
+      ],
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('Plain text episode about debugging session');
+  });
 });
