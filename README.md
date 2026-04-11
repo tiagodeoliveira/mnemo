@@ -10,7 +10,7 @@ mnemo sits between Claude Code and Bedrock AgentCore Memory through a REST API. 
 
 **Write path:** Claude Code hook fires on every Nth prompt, batches recent turns, sends them to `POST /events`. The Ingest Lambda maps turns to AgentCore's `CreateEvent` API. AgentCore asynchronously extracts memories using four strategies.
 
-**Read path:** Claude Code hook fires at session start, calls `GET /recall`. The Recall Lambda queries four namespace prefixes in parallel and merges the results.
+**Read path:** Claude Code hook fires at session start, calls `GET /recall`. The Recall Lambda queries three namespace prefixes in parallel (four if inside a project) and merges the results.
 
 ### Memory strategies
 
@@ -38,7 +38,7 @@ Claude Code hooks
   |                   |
 Ingest Lambda    Recall Lambda
   |                   |
-  CreateEvent    RetrieveMemoryRecords (x4-5 parallel)
+  CreateEvent    RetrieveMemoryRecords (x3-4 parallel)
   |
   AgentCore (async)
   |
@@ -55,17 +55,16 @@ mnemo/
     bin/mnemo.ts            CDK app entry point
     lib/
       mnemo-stack.ts        Main stack, wires all constructs
-      memory-construct.ts   AgentCore Memory custom resource
+      memory-construct.ts   AgentCore Memory (CfnMemory), execution role, SNS, S3
       api-construct.ts      API Gateway + API key
       lambda-construct.ts   Lambda function definitions
     lambda/
       ingest/               POST /events handler
       recall/               GET /recall handler
       project-extractor/    SNS-triggered project context extractor
-      memory-provider/      CloudFormation custom resource lifecycle
   cli/                      CLI tool (TypeScript)
     src/
-      index.ts              Entry point (push, recall, init commands)
+      index.ts              Entry point (push, recall, install commands)
       config.ts             Config loader (~/.mnemo/config.json)
       detect-project.ts     Git-based project detection
       commands/
@@ -86,7 +85,7 @@ mnemo/
 - Bedrock AgentCore Memory access enabled in your region
 - `jq` installed (used by hook scripts)
 
-**Important:** The `@aws-sdk/client-bedrock-agentcore` and `@aws-sdk/client-bedrock-agentcore-control` packages must be available before deploying. These are new packages for the AgentCore service. Once published to npm, run `npm install` in `infra/` to pull them in. Until then, tests pass (SDK is mocked) but deploy will fail.
+**Important:** The `@aws-sdk/client-bedrock-agentcore` package must be available in the Lambda runtime for the ingest, recall, and project-extractor functions. This package is pre-installed in the Node.js 22 Lambda runtime. The CDK stack uses the native `AWS::BedrockAgentCore::Memory` CloudFormation resource, so no control-plane SDK is needed at deploy time.
 
 ## Deploy
 
@@ -137,8 +136,10 @@ aws apigateway get-api-key --api-key <API_KEY_ID> --include-value --query 'value
 
 ```bash
 cd cli && npm run build
-npm link -w cli
+npm link -w mnemo-cli
 ```
+
+Run `npm link` from the monorepo root, or alternatively `cd cli && npm link`.
 
 This makes the `mnemo` command available globally.
 
