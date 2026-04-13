@@ -119,12 +119,25 @@ function formatEpisodeSection(records: MemoryRecord[]): string {
   return `## Episodes\n${items}\n`;
 }
 
-export function formatRecallOutput(response: RecallResponse, visible: boolean): string {
+export interface FormatOptions {
+  visible: boolean;
+  includeEpisodes?: boolean;
+}
+
+export function formatRecallOutput(response: RecallResponse, visibleOrOpts: boolean | FormatOptions): string {
+  const opts: FormatOptions = typeof visibleOrOpts === 'boolean'
+    ? { visible: visibleOrOpts, includeEpisodes: true }
+    : visibleOrOpts;
+  const visible = opts.visible;
+  const includeEpisodes = opts.includeEpisodes ?? true;
+
   const sections: string[] = [];
 
   sections.push(formatBulletSection('Preferences', response.preferences, extractPreference));
   sections.push(formatBulletSection('Facts', response.facts, (c) => c));
-  sections.push(formatEpisodeSection(response.episodes));
+  if (includeEpisodes) {
+    sections.push(formatEpisodeSection(response.episodes));
+  }
 
   if (response.project) {
     sections.push(formatBulletSection(`Project: ${response.project.name}`, response.project.memories, (c) => c));
@@ -147,8 +160,9 @@ export function formatRecallOutput(response: RecallResponse, visible: boolean): 
   }
 
   return JSON.stringify({
-    continue: true,
-    suppressOutput: true,
-    systemMessage: `[mnemo context]\n${content}`,
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: `[mnemo context]\n${content}`,
+    },
   });
 }

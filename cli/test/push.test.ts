@@ -76,7 +76,7 @@ describe('push command', () => {
     expect(body.context.source).toBe('claude-code');
   });
 
-  it('omits source from context when not provided', async () => {
+  it('defaults source to unknown when not provided', async () => {
     await executePush({
       apiUrl: 'https://api.example.com/v1',
       apiKey: 'test-key',
@@ -87,6 +87,6 @@ describe('push command', () => {
     });
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.source).toBeUndefined();
+    expect(body.context.source).toBe('unknown');
   });
 });

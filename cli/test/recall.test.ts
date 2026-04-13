@@ -89,10 +89,13 @@ describe('formatRecallOutput', () => {
     expect(output).toContain('Chose CDK over SAM');
   });
 
-  it('formats response for silent mode as JSON system message', () => {
+  it('formats response for silent mode as JSON with additionalContext', () => {
     const output = formatRecallOutput(sampleResponse, false);
     const parsed = JSON.parse(output);
-    expect(parsed.systemMessage).toBeDefined();
+    expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
+    expect(parsed.hookSpecificOutput.additionalContext).toBeDefined();
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('[mnemo context]');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('Prefers TypeScript');
   });
 
   it('extracts plain text from JSON preference content', () => {

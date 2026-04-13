@@ -15,7 +15,7 @@ const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.mnemo', 'config.json');
 
 export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): MnemoConfig {
   if (!fs.existsSync(configPath)) {
-    throw new Error(`Config file not found: ${configPath}. Run 'mnemo init' to create one.`);
+    throw new Error(`Config file not found: ${configPath}. Run 'mnemo install' to create one.`);
   }
 
   const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));

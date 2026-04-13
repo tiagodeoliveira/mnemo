@@ -49,6 +49,8 @@ program
   .option('--project <name>', 'Project name (auto-detected from git)')
   .option('--task <name>', 'Task domain (e.g., coding, studying, meeting)')
   .option('--date <yyyy-mm-dd>', 'Date for daily summary')
+  .option('--format <mode>', 'Output format: visible (markdown) or hook (Claude Code JSON)', '')
+  .option('--no-episodes', 'Exclude episodic memories from output')
   .action(async (opts) => {
     try {
       const config = loadConfig();
@@ -63,7 +65,8 @@ program
         date: opts.date,
       });
 
-      const output = formatRecallOutput(response, config.defaults.visible);
+      const visible = opts.format === 'hook' ? false : opts.format === 'visible' ? true : config.defaults.visible;
+      const output = formatRecallOutput(response, { visible, includeEpisodes: opts.episodes !== false });
       if (output) process.stdout.write(output + '\n');
     } catch (err: any) {
       process.stderr.write(`mnemo recall error: ${err.message}\n`);

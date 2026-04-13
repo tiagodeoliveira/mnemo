@@ -16,7 +16,7 @@ export async function executePush(options: PushOptions): Promise<void> {
     timestamp: new Date().toISOString(),
   };
   if (options.project) context.project = options.project;
-  if (options.source) context.source = options.source;
+  context.source = options.source || 'unknown';
 
   const response = await fetch(`${options.apiUrl}/events`, {
     method: 'POST',

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# mnemo push hook
-# Reads hook input from stdin, batches conversation turns, pushes to memory
-# Uses a counter file to batch every N prompts
+# mnemo push hook (UserPromptSubmit)
+# Reads hook input from stdin, batches conversation turns, pushes to memory.
+# Uses a counter file to batch every N prompts.
+#
+# Transcript format (JSONL):
+#   type:"user"      → message.content is a string
+#   type:"assistant"  → message.content is an array of blocks [{type:"text",text:"..."},...]
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
@@ -40,37 +44,41 @@ if [ -n "$CWD" ] && git -C "$CWD" rev-parse --show-toplevel >/dev/null 2>&1; the
   PROJECT=$(basename "$(git -C "$CWD" rev-parse --show-toplevel)")
 fi
 
-# Extract recent turns from transcript (last 100 lines, simplified)
-TURNS=$(tail -100 "$TRANSCRIPT_PATH" 2>/dev/null | jq -Rs '
-  split("\n") |
-  map(select(length > 0)) |
-  map(
-    if startswith("User:") or startswith("Human:") then
-      { role: "user", content: (ltrimstr("User: ") | ltrimstr("Human: ")) }
-    elif startswith("Assistant:") or startswith("Claude:") then
-      { role: "assistant", content: (ltrimstr("Assistant: ") | ltrimstr("Claude: ")) }
-    else
-      empty
+# Extract recent turns from JSONL transcript.
+# Take the last 200 lines, filter to user/assistant entries, extract text content.
+# User messages: only include when .message.content is a string (actual human prompt),
+#   skip tool_result arrays which are just tool outputs fed back.
+# Assistant messages: extract only text blocks, skip tool_use-only messages.
+TURNS=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null | jq -c '
+  select(.type == "user" or .type == "assistant") |
+  if .type == "user" then
+    if (.message.content | type) == "string" then
+      { role: "user", content: .message.content }
+    else empty
     end
-  )
-' 2>/dev/null || echo "[]")
+  elif .type == "assistant" then
+    { role: "assistant", content: (
+      [.message.content[]? | select(.type == "text") | .text] | join("\n")
+    ) }
+  else empty
+  end
+' 2>/dev/null | jq -s 'map(select(.content != ""))' 2>/dev/null || echo "[]")
 
 if [ "$TURNS" = "[]" ] || [ -z "$TURNS" ]; then
   exit 0
 fi
 
 # Push in background
-PROJECT_ARG=""
+PUSH_ARGS=(
+  --session "$SESSION_ID"
+  --turns "$TURNS"
+  --workdir "${CWD:-.}"
+  --source claude-code
+)
 if [ -n "$PROJECT" ]; then
-  PROJECT_ARG="--project $PROJECT"
+  PUSH_ARGS+=(--project "$PROJECT")
 fi
 
-mnemo push \
-  --session "$SESSION_ID" \
-  --turns "$TURNS" \
-  --workdir "${CWD:-.}" \
-  --source claude-code \
-  $PROJECT_ARG \
-  >/dev/null 2>&1 &
+mnemo push "${PUSH_ARGS[@]}" >/dev/null 2>&1 &
 
 exit 0
