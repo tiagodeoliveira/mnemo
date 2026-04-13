@@ -38,6 +38,12 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     if (body.context.project) {
       metadata.project = { stringValue: body.context.project };
     }
+    if (body.context.source) {
+      metadata.source = { stringValue: body.context.source };
+    }
+
+    const date = body.context.timestamp.slice(0, 10);
+    metadata.date = { stringValue: date };
 
     await client.send(
       new CreateEventCommand({

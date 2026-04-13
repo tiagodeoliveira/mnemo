@@ -100,4 +100,41 @@ describe('ingest lambda', () => {
 
     expect(result.statusCode).toBe(400);
   });
+
+  it('passes source metadata when provided', async () => {
+    const result = await handler(
+      makeEvent({
+        sessionId: 'session-4',
+        turns: [{ role: 'user', content: 'hello' }],
+        context: {
+          workstation: 'laptop',
+          workdir: '/home/user',
+          timestamp: '2026-04-13T14:00:00Z',
+          source: 'claude-code',
+        },
+      })
+    );
+
+    expect(result.statusCode).toBe(200);
+    const command = mockSend.mock.calls[0][0];
+    expect(command.input.metadata.source.stringValue).toBe('claude-code');
+  });
+
+  it('derives date from timestamp and includes in metadata', async () => {
+    const result = await handler(
+      makeEvent({
+        sessionId: 'session-5',
+        turns: [{ role: 'user', content: 'hello' }],
+        context: {
+          workstation: 'laptop',
+          workdir: '/home/user',
+          timestamp: '2026-04-13T14:30:00Z',
+        },
+      })
+    );
+
+    expect(result.statusCode).toBe(200);
+    const command = mockSend.mock.calls[0][0];
+    expect(command.input.metadata.date.stringValue).toBe('2026-04-13');
+  });
 });
