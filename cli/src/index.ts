@@ -19,6 +19,7 @@ program
   .requiredOption('--session <id>', 'Session ID')
   .requiredOption('--turns <json>', 'JSON array of conversation turns')
   .option('--project <name>', 'Project name (auto-detected from git)')
+  .option('--source <name>', 'Source identifier (e.g., claude-code, meeting-tool)')
   .option('--workdir <path>', 'Working directory', process.cwd())
   .action(async (opts) => {
     try {
@@ -34,6 +35,7 @@ program
         project,
         workstation: config.workstation,
         workdir: opts.workdir,
+        source: opts.source,
       });
     } catch (err: any) {
       process.stderr.write(`mnemo push error: ${err.message}\n`);

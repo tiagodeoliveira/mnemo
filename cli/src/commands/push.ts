@@ -6,9 +6,18 @@ export interface PushOptions {
   project?: string;
   workstation: string;
   workdir: string;
+  source?: string;
 }
 
 export async function executePush(options: PushOptions): Promise<void> {
+  const context: Record<string, any> = {
+    workstation: options.workstation,
+    workdir: options.workdir,
+    timestamp: new Date().toISOString(),
+  };
+  if (options.project) context.project = options.project;
+  if (options.source) context.source = options.source;
+
   const response = await fetch(`${options.apiUrl}/events`, {
     method: 'POST',
     headers: {
@@ -18,12 +27,7 @@ export async function executePush(options: PushOptions): Promise<void> {
     body: JSON.stringify({
       sessionId: options.sessionId,
       turns: options.turns,
-      context: {
-        project: options.project,
-        workstation: options.workstation,
-        workdir: options.workdir,
-        timestamp: new Date().toISOString(),
-      },
+      context,
     }),
   });
 

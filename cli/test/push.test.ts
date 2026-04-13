@@ -59,4 +59,34 @@ describe('push command', () => {
       })
     ).rejects.toThrow('500');
   });
+
+  it('includes source in context when provided', async () => {
+    await executePush({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      sessionId: 'session-1',
+      turns: [{ role: 'user', content: 'hello' }],
+      project: 'mnemo',
+      workstation: 'laptop',
+      workdir: '/home/user/mnemo',
+      source: 'claude-code',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.context.source).toBe('claude-code');
+  });
+
+  it('omits source from context when not provided', async () => {
+    await executePush({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      sessionId: 'session-1',
+      turns: [{ role: 'user', content: 'hello' }],
+      workstation: 'laptop',
+      workdir: '/home/user',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.context.source).toBeUndefined();
+  });
 });
