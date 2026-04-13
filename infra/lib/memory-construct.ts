@@ -42,7 +42,10 @@ export class MemoryConstruct extends Construct {
           statements: [
             new iam.PolicyStatement({
               actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
-              resources: ['*'],
+              resources: [
+                `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/*`,
+                `arn:aws:bedrock:*:*:inference-profile/*`,
+              ],
             }),
             new iam.PolicyStatement({
               actions: ['sns:Publish', 'sns:GetTopicAttributes'],
@@ -132,6 +135,9 @@ export class MemoryConstruct extends Construct {
       },
     });
 
+    const region = cdk.Stack.of(this).region;
+    const account = cdk.Stack.of(this).account;
+
     observabilityFn.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -145,7 +151,12 @@ export class MemoryConstruct extends Construct {
           'logs:DeleteDeliveryDestination',
           'logs:DescribeDeliveries',
         ],
-        resources: ['*'],
+        resources: [
+          `arn:aws:logs:${region}:${account}:log-group:/aws/vendedlogs/bedrock-agentcore/*`,
+          `arn:aws:logs:${region}:${account}:delivery:*`,
+          `arn:aws:logs:${region}:${account}:delivery-source:*`,
+          `arn:aws:logs:${region}:${account}:delivery-destination:*`,
+        ],
       })
     );
 

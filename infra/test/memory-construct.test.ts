@@ -134,4 +134,31 @@ describe('MemoryConstruct', () => {
       DeletionPolicy: 'Delete',
     });
   });
+
+  it('scopes bedrock permissions on execution role to foundation models', () => {
+    const app = new cdk.App();
+    const stack = new cdk.Stack(app, 'TestStack', {
+      env: { account: '123456789012', region: 'us-east-1' },
+    });
+
+    new MemoryConstruct(stack, 'Memory', {
+      memoryName: 'test_memory',
+      actorId: 'test-actor',
+    });
+
+    const template = Template.fromStack(stack);
+    const roles = template.findResources('AWS::IAM::Role');
+    for (const [, role] of Object.entries(roles)) {
+      const policies = (role as any).Properties?.Policies || [];
+      for (const policy of policies) {
+        const stmts = policy.PolicyDocument?.Statement || [];
+        for (const stmt of stmts) {
+          const actions = Array.isArray(stmt.Action) ? stmt.Action : [stmt.Action];
+          if (actions.includes('bedrock:InvokeModel')) {
+            expect(stmt.Resource).not.toBe('*');
+          }
+        }
+      }
+    }
+  });
 });

@@ -32,13 +32,15 @@ export class LambdaConstruct extends Construct {
       ACTOR_ID: props.actorId,
     };
 
+    const memoryArn = `arn:aws:bedrock-agentcore:${cdk.Stack.of(this).region}:${cdk.Stack.of(this).account}:memory/${props.memoryId}`;
+
     const agentcorePolicy = new iam.PolicyStatement({
       actions: [
         'bedrock-agentcore:CreateEvent',
         'bedrock-agentcore:RetrieveMemoryRecords',
         'bedrock-agentcore:BatchCreateMemoryRecords',
       ],
-      resources: ['*'],
+      resources: [memoryArn],
     });
 
     this.ingestFunction = new NodejsFunction(this, 'IngestFn', {
@@ -85,7 +87,10 @@ export class LambdaConstruct extends Construct {
     this.contextExtractorFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
-        resources: ['*'],
+        resources: [
+          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/*`,
+          `arn:aws:bedrock:*:*:inference-profile/*`,
+        ],
       })
     );
 
