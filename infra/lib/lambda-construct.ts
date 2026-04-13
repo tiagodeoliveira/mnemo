@@ -88,7 +88,7 @@ export class LambdaConstruct extends Construct {
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: [
-          `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/*`,
+          `arn:aws:bedrock:*::foundation-model/*`,
           `arn:aws:bedrock:*:*:inference-profile/*`,
         ],
       })

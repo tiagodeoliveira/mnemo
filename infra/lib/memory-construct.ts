@@ -43,7 +43,7 @@ export class MemoryConstruct extends Construct {
             new iam.PolicyStatement({
               actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
               resources: [
-                `arn:aws:bedrock:${cdk.Stack.of(this).region}::foundation-model/*`,
+                `arn:aws:bedrock:*::foundation-model/*`,
                 `arn:aws:bedrock:*:*:inference-profile/*`,
               ],
             }),
