@@ -69,6 +69,7 @@ mnemo push \
   --session "$SESSION_ID" \
   --turns "$TURNS" \
   --workdir "${CWD:-.}" \
+  --source claude-code \
   $PROJECT_ARG \
   >/dev/null 2>&1 &
 
