@@ -155,70 +155,84 @@ async function writeMemoryRecord(
 }
 
 export async function handler(event: SNSEvent): Promise<void> {
-  const message = JSON.parse(event.Records[0].Sns.Message);
+  let sessionId: string | undefined;
+  try {
+    const message = JSON.parse(event.Records[0].Sns.Message);
 
-  const { bucket, key } = parseS3Uri(message.s3PayloadLocation);
-  const s3Response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  const payload = JSON.parse(await s3Response.Body!.transformToString());
+    const { bucket, key } = parseS3Uri(message.s3PayloadLocation);
+    const s3Response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const payload = JSON.parse(await s3Response.Body!.transformToString());
 
-  // Parse deterministic metadata from embedded context turn
-  const metadata = parseMetadata(payload);
+    sessionId = payload.sessionId;
 
-  const conversationText = extractConversationText(payload);
-  if (!conversationText) return;
+    const metadata = parseMetadata(payload);
 
-  const allowedDomains = getTaskDomains();
-  const result = await callLlm(conversationText, allowedDomains, metadata);
-  if (!result) {
-    console.warn(`Failed to parse LLM extraction for session ${payload.sessionId}`);
-    return;
+    const conversationText = extractConversationText(payload);
+    if (!conversationText) return;
+
+    const allowedDomains = getTaskDomains();
+    const result = await callLlm(conversationText, allowedDomains, metadata);
+    if (!result) {
+      console.warn(`Failed to parse LLM extraction for session ${sessionId}`);
+      return;
+    }
+
+    const { taskDomain, facts, daily } = result;
+    const actorId = payload.actorId || process.env.ACTOR_ID!;
+    const memoryId = payload.memoryId || process.env.MEMORY_ID!;
+
+    const date = metadata.date || deriveDate(payload);
+    const projectName = metadata.project ? sanitizeName(metadata.project) : undefined;
+
+    const isNone = (s: string) => !s || s === 'NONE';
+    const hasProject = !!projectName && !isNone(facts);
+    const hasTask = taskDomain !== 'unknown' && !isNone(facts);
+    const hasDaily = !isNone(daily);
+
+    if (!hasProject && !hasTask && !hasDaily) return;
+
+    const writes: Promise<void>[] = [];
+
+    if (hasProject) {
+      writes.push(
+        writeMemoryRecord(memoryId, `/projects/${actorId}/${projectName}/`, facts)
+      );
+    }
+
+    if (hasTask) {
+      writes.push(
+        writeMemoryRecord(memoryId, `/tasks/${actorId}/${taskDomain}/`, facts)
+      );
+    }
+
+    if (hasDaily) {
+      writes.push(
+        writeMemoryRecord(memoryId, `/daily/${actorId}/${date}/`, daily)
+      );
+    }
+
+    await Promise.all(writes);
+
+    const parts = [
+      hasProject ? `project="${projectName}"` : null,
+      hasTask ? `task="${taskDomain}"` : null,
+      hasDaily ? `daily="${date}"` : null,
+      metadata.source ? `source="${metadata.source}"` : null,
+    ].filter(Boolean).join(', ');
+    console.log(`Extracted context (${parts}) from session ${payload.sessionId}`);
+  } catch (err: any) {
+    console.error('Context extraction failed', {
+      error: err.message,
+      name: err.name,
+      sessionId,
+    });
+
+    // Rethrow transient errors so SNS retries
+    if (err.name === 'ThrottlingException' || err.name === 'ServiceUnavailableException') {
+      throw err;
+    }
+    // Swallow permanent errors to avoid infinite retry loops
   }
-
-  const { taskDomain, facts, daily } = result;
-  const actorId = payload.actorId || process.env.ACTOR_ID!;
-  const memoryId = payload.memoryId || process.env.MEMORY_ID!;
-
-  // Use metadata date if available, otherwise derive from payload timestamps
-  const date = metadata.date || deriveDate(payload);
-  // Use metadata project deterministically (sanitized)
-  const projectName = metadata.project ? sanitizeName(metadata.project) : undefined;
-
-  const isNone = (s: string) => !s || s === 'NONE';
-  const hasProject = !!projectName && !isNone(facts);
-  const hasTask = taskDomain !== 'unknown' && !isNone(facts);
-  const hasDaily = !isNone(daily);
-
-  if (!hasProject && !hasTask && !hasDaily) return;
-
-  const writes: Promise<void>[] = [];
-
-  if (hasProject) {
-    writes.push(
-      writeMemoryRecord(memoryId, `/projects/${actorId}/${projectName}/`, facts)
-    );
-  }
-
-  if (hasTask) {
-    writes.push(
-      writeMemoryRecord(memoryId, `/tasks/${actorId}/${taskDomain}/`, facts)
-    );
-  }
-
-  if (hasDaily) {
-    writes.push(
-      writeMemoryRecord(memoryId, `/daily/${actorId}/${date}/`, daily)
-    );
-  }
-
-  await Promise.all(writes);
-
-  const parts = [
-    hasProject ? `project="${projectName}"` : null,
-    hasTask ? `task="${taskDomain}"` : null,
-    hasDaily ? `daily="${date}"` : null,
-    metadata.source ? `source="${metadata.source}"` : null,
-  ].filter(Boolean).join(', ');
-  console.log(`Extracted context (${parts}) from session ${payload.sessionId}`);
 }
 
 function deriveDate(payload: any): string {

@@ -278,6 +278,42 @@ Discussed travel plans for Japan`;
     expect(dailyCall.records[0].namespaces[0]).toBe('/daily/tiago/2026-04-13/');
   });
 
+  it('logs and swallows permanent S3 errors', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockS3Send.mockRejectedValue(new Error('NoSuchKey: The specified key does not exist'));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/missing.json')));
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Context extraction failed'),
+      expect.objectContaining({ error: expect.stringContaining('NoSuchKey') }),
+    );
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    expect(mockAgentCoreSend).not.toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
+
+  it('rethrows throttling errors for SNS retry', async () => {
+    const payload = makeS3Payload('session-throttle', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-13]' } },
+      { role: 'USER', content: { text: 'Some conversation' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    const throttleError = new Error('Rate exceeded');
+    throttleError.name = 'ThrottlingException';
+    mockBedrockSend.mockRejectedValue(throttleError);
+
+    await expect(
+      handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')))
+    ).rejects.toThrow('Rate exceeded');
+  });
+
   it('excludes mnemo-context line from conversation text sent to LLM', async () => {
     const payload = makeS3Payload('session-8', [
       { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-13]' } },
