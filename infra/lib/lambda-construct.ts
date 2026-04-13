@@ -14,6 +14,7 @@ export interface LambdaConstructProps {
   snsTopic: sns.ITopic;
   payloadBucket: s3.IBucket;
   modelId?: string;
+  taskDomains?: string[];
 }
 
 export class LambdaConstruct extends Construct {
@@ -64,6 +65,8 @@ export class LambdaConstruct extends Construct {
     });
     (this.recallFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
 
+    const taskDomains = props.taskDomains || ['coding', 'studying', 'meeting', 'general'];
+
     this.contextExtractorFunction = new NodejsFunction(this, 'ContextExtractorFn', {
       entry: path.join(lambdaDir, 'context-extractor', 'index.ts'),
       handler: 'handler',
@@ -72,6 +75,7 @@ export class LambdaConstruct extends Construct {
       environment: {
         ...commonEnv,
         MODEL_ID: props.modelId || 'anthropic.claude-3-haiku-20240307-v1:0',
+        TASK_DOMAINS: taskDomains.join(','),
       },
       bundling: {
         nodeModules: ['@aws-sdk/client-bedrock-agentcore'],

@@ -110,6 +110,7 @@ describe('context-extractor lambda', () => {
     process.env.MEMORY_ID = 'mem-123';
     process.env.ACTOR_ID = 'tiago';
     process.env.MODEL_ID = 'anthropic.claude-3-haiku-20240307-v1:0';
+    process.env.TASK_DOMAINS = 'coding,studying,meeting,general';
     mockAgentCoreSend.mockResolvedValue({
       successfulRecords: [{ memoryRecordId: 'rec-1', status: 'SUCCEEDED' }],
       failedRecords: [],
@@ -206,6 +207,36 @@ describe('context-extractor lambda', () => {
     const s3Cmd = mockS3Send.mock.calls[0][0];
     expect(s3Cmd.input.Bucket).toBe('my-bucket');
     expect(s3Cmd.input.Key).toBe('path/to/payload.json');
+  });
+
+  it('falls back to general when LLM returns unlisted task domain', async () => {
+    const payload = makeS3Payload('session-fallback', [
+      { role: 'USER', content: { text: 'Planning a trip to Japan' }, eventId: 'e1' },
+    ]);
+
+    const llmResponse = `PROJECT: unknown
+TASK: planning
+FACTS:
+Planning a trip to Japan in November
+DAILY:
+Discussed travel plans for Japan`;
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(llmResponse));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // Should write 2 records: task (general fallback) + daily
+    expect(mockAgentCoreSend).toHaveBeenCalledTimes(2);
+
+    const calls = mockAgentCoreSend.mock.calls.map((c: any) => c[0].input);
+    const namespaces = calls.map((c: any) => c.records[0].namespaces[0]);
+
+    // "planning" is not in allowed list, should fall back to "general"
+    expect(namespaces).toContain('/tasks/tiago/general/');
+    expect(namespaces).not.toEqual(expect.arrayContaining([expect.stringContaining('/planning/')]));
   });
 
   it('derives date from payload timestamps', async () => {

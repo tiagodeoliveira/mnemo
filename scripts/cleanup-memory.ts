@@ -20,18 +20,20 @@ const client = new BedrockAgentCoreClient({});
 interface Config {
   memoryId: string;
   actorId: string;
+  taskDomains: string[];
 }
 
 function loadConfig(): Config {
   if (process.env.MEMORY_ID && process.env.ACTOR_ID) {
-    return { memoryId: process.env.MEMORY_ID, actorId: process.env.ACTOR_ID };
+    const domains = (process.env.TASK_DOMAINS || 'coding,studying,meeting,general').split(',').map(d => d.trim());
+    return { memoryId: process.env.MEMORY_ID, actorId: process.env.ACTOR_ID, taskDomains: domains };
   }
 
   // Auto-discover from deployed Lambda env vars via AWS CLI
   try {
     const fnName = execFileSync('aws', [
       'lambda', 'list-functions',
-      '--query', "Functions[?contains(FunctionName, 'IngestFn')].FunctionName | [0]",
+      '--query', "Functions[?contains(FunctionName, 'ContextExtractorFn')].FunctionName | [0]",
       '--output', 'text',
     ], { encoding: 'utf-8' }).trim();
 
@@ -43,7 +45,8 @@ function loadConfig(): Config {
     ], { encoding: 'utf-8' }).trim();
 
     const env = JSON.parse(envJson);
-    return { memoryId: env.MEMORY_ID || '', actorId: env.ACTOR_ID || '' };
+    const domains = (env.TASK_DOMAINS || 'coding,studying,meeting,general').split(',').map((d: string) => d.trim());
+    return { memoryId: env.MEMORY_ID || '', actorId: env.ACTOR_ID || '', taskDomains: domains };
   } catch {
     throw new Error('Could not auto-discover config. Set MEMORY_ID and ACTOR_ID env vars.');
   }
@@ -84,13 +87,14 @@ async function deleteRecord(memoryId: string, recordId: string): Promise<boolean
 }
 
 async function main() {
-  const { memoryId, actorId } = loadConfig();
+  const { memoryId, actorId, taskDomains } = loadConfig();
   if (!memoryId || !actorId) {
     console.error('ERROR: memoryId and actorId required. Set in ~/.mnemo/config.json or env vars.');
     process.exit(1);
   }
 
-  console.log(`Cleaning up memory records for actor=${actorId}, memory=${memoryId}\n`);
+  console.log(`Cleaning up memory records for actor=${actorId}, memory=${memoryId}`);
+  console.log(`Task domains: [${taskDomains.join(', ')}]\n`);
 
   const namespaces = [
     `/preferences/${actorId}/`,
@@ -98,10 +102,7 @@ async function main() {
     `/episodes/${actorId}/`,
     `/projects/${actorId}/mnemo/`,
     `/projects/${actorId}/claude_code/`,
-    `/tasks/${actorId}/coding/`,
-    `/tasks/${actorId}/studying/`,
-    `/tasks/${actorId}/meeting/`,
-    `/tasks/${actorId}/general/`,
+    ...taskDomains.map(d => `/tasks/${actorId}/${d}/`),
     `/daily/${actorId}/${new Date().toISOString().slice(0, 10)}/`,
   ];
 

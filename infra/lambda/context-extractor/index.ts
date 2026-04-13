@@ -10,21 +10,27 @@ const agentcore = new BedrockAgentCoreClient({});
 const bedrock = new BedrockRuntimeClient({});
 const s3 = new S3Client({});
 
-const EXTRACTION_PROMPT = `You are analyzing a conversation between a user and an AI assistant.
+const DEFAULT_TASK_DOMAINS = 'coding,studying,meeting,general';
+
+function getTaskDomains(): string[] {
+  const raw = process.env.TASK_DOMAINS || DEFAULT_TASK_DOMAINS;
+  const domains = raw.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
+  // Ensure 'general' is always present as the fallback
+  if (!domains.includes('general')) domains.push('general');
+  return domains;
+}
+
+function buildExtractionPrompt(domains: string[]): string {
+  const domainList = domains.map((d) => `   - ${d}`).join('\n');
+  return `You are analyzing a conversation between a user and an AI assistant.
 
 Perform three analyses:
 
 1. IDENTIFY THE PROJECT: Look for repository names, package names, or project references. If none found, output "unknown".
 
 2. CLASSIFY THE TASK DOMAIN: Categorize the conversation into exactly one of these domains based on the primary topic:
-   - coding (software development, debugging, architecture)
-   - studying (learning, research, education)
-   - meeting (discussion summaries, decisions, action items)
-   - finance (budgeting, investments, expenses)
-   - career (job planning, mentorship, professional growth)
-   - writing (documentation, content creation, communication)
-   - planning (project planning, scheduling, organization)
-   - general (anything that doesn't fit above)
+${domainList}
+   You MUST pick exactly one domain from the list above. If the conversation doesn't clearly fit any specific domain, use "general".
    If the conversation is too short or vague to classify, output "unknown".
 
 3. EXTRACT INSIGHTS: Pull out domain-specific facts, decisions, and context.
@@ -38,6 +44,7 @@ FACTS:
 <one fact per line, or NONE if nothing meaningful>
 DAILY:
 <1-3 sentence summary, or NONE if nothing meaningful>`;
+}
 
 function parseS3Uri(uri: string): { bucket: string; key: string } {
   const withoutProtocol = uri.replace('s3://', '');
@@ -64,7 +71,7 @@ interface ExtractionResult {
   daily: string;
 }
 
-function parseExtraction(text: string): ExtractionResult | undefined {
+function parseExtraction(text: string, allowedDomains: string[]): ExtractionResult | undefined {
   const projectMatch = text.match(/^PROJECT:\s*(.+)$/m);
   const taskMatch = text.match(/^TASK:\s*(.+)$/m);
   const factsMatch = text.match(/^FACTS:\s*\n?([\s\S]*?)(?=^DAILY:)/m);
@@ -72,9 +79,15 @@ function parseExtraction(text: string): ExtractionResult | undefined {
 
   if (!projectMatch || !taskMatch) return undefined;
 
+  let taskDomain = sanitizeName(taskMatch[1]);
+  if (taskDomain !== 'unknown' && !allowedDomains.includes(taskDomain)) {
+    console.warn(`LLM returned task domain "${taskDomain}" not in allowed list [${allowedDomains}], falling back to "general"`);
+    taskDomain = 'general';
+  }
+
   return {
     projectName: sanitizeName(projectMatch[1]),
-    taskDomain: sanitizeName(taskMatch[1]),
+    taskDomain,
     facts: factsMatch ? factsMatch[1].trim() : '',
     daily: dailyMatch ? dailyMatch[1].trim() : '',
   };
@@ -120,7 +133,8 @@ export async function handler(event: SNSEvent): Promise<void> {
   const conversationText = extractConversationText(payload);
   if (!conversationText) return;
 
-  const result = await callLlm(conversationText);
+  const allowedDomains = getTaskDomains();
+  const result = await callLlm(conversationText, allowedDomains);
   if (!result) {
     console.warn(`Failed to parse LLM extraction for session ${payload.sessionId}`);
     return;
@@ -168,7 +182,8 @@ export async function handler(event: SNSEvent): Promise<void> {
   console.log(`Extracted context (${parts}) from session ${payload.sessionId}`);
 }
 
-async function callLlm(conversation: string): Promise<ExtractionResult | undefined> {
+async function callLlm(conversation: string, allowedDomains: string[]): Promise<ExtractionResult | undefined> {
+  const prompt = buildExtractionPrompt(allowedDomains);
   const response = await bedrock.send(
     new InvokeModelCommand({
       modelId: process.env.MODEL_ID || 'anthropic.claude-3-haiku-20240307-v1:0',
@@ -178,7 +193,7 @@ async function callLlm(conversation: string): Promise<ExtractionResult | undefin
         messages: [
           {
             role: 'user',
-            content: `${EXTRACTION_PROMPT}\n\nConversation:\n${conversation}`,
+            content: `${prompt}\n\nConversation:\n${conversation}`,
           },
         ],
       }),
@@ -187,5 +202,5 @@ async function callLlm(conversation: string): Promise<ExtractionResult | undefin
 
   const body = JSON.parse(new TextDecoder().decode(response.body));
   const text = body.content?.[0]?.text || '';
-  return parseExtraction(text);
+  return parseExtraction(text, allowedDomains);
 }
