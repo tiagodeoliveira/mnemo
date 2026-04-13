@@ -2,7 +2,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+const SUPPORTED_CLIENTS = ['claude-code'] as const;
+type SupportedClient = typeof SUPPORTED_CLIENTS[number];
+
 export interface InstallHooksOptions {
+  client: string;
   mnemoConfigPath?: string;
   claudeSettingsPath?: string;
   hooksDir?: string;
@@ -40,7 +44,13 @@ function containsMnemoHook(hookEntries: HookEntry[]): boolean {
   );
 }
 
-export function installHooks(options: InstallHooksOptions = {}): InstallHooksResult {
+export function installHooks(options: InstallHooksOptions): InstallHooksResult {
+  if (!SUPPORTED_CLIENTS.includes(options.client as SupportedClient)) {
+    throw new Error(
+      `Unsupported client "${options.client}". Supported clients: ${SUPPORTED_CLIENTS.join(', ')}`
+    );
+  }
+
   const mnemoConfigPath = options.mnemoConfigPath ?? path.join(os.homedir(), '.mnemo', 'config.json');
   const claudeSettingsPath = options.claudeSettingsPath ?? path.join(os.homedir(), '.claude', 'settings.json');
   const hooksDir = options.hooksDir ?? defaultHooksDir();

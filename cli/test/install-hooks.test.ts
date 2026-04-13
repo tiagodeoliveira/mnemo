@@ -23,7 +23,7 @@ describe('install-hooks', () => {
   });
 
   it('creates mnemo config and claude settings from scratch', () => {
-    const result = installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
+    const result = installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
 
     expect(fs.existsSync(mnemoConfigPath)).toBe(true);
     expect(fs.existsSync(claudeSettingsPath)).toBe(true);
@@ -46,7 +46,7 @@ describe('install-hooks', () => {
       },
     }, null, 2));
 
-    const result = installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
+    const result = installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
 
     const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'));
     expect(settings.permissions.allow).toEqual(['Read']);
@@ -60,7 +60,7 @@ describe('install-hooks', () => {
   it('skips mnemo config if it already exists', () => {
     fs.writeFileSync(mnemoConfigPath, JSON.stringify({ apiUrl: 'https://existing.com' }));
 
-    const result = installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
+    const result = installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
 
     const config = JSON.parse(fs.readFileSync(mnemoConfigPath, 'utf-8'));
     expect(config.apiUrl).toBe('https://existing.com');
@@ -68,8 +68,8 @@ describe('install-hooks', () => {
   });
 
   it('skips hooks if already installed', () => {
-    installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
-    const result = installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
+    installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
+    const result = installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
 
     expect(result.hooksInstalled).toBe(false);
 
@@ -77,8 +77,14 @@ describe('install-hooks', () => {
     expect(settings.hooks.SessionStart).toHaveLength(1);
   });
 
+  it('rejects unsupported clients', () => {
+    expect(() =>
+      installHooks({ client: 'unknown-tool', mnemoConfigPath, claudeSettingsPath, hooksDir })
+    ).toThrow('Unsupported client "unknown-tool"');
+  });
+
   it('uses absolute paths for hook commands', () => {
-    installHooks({ mnemoConfigPath, claudeSettingsPath, hooksDir });
+    installHooks({ client: 'claude-code', mnemoConfigPath, claudeSettingsPath, hooksDir });
 
     const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'));
     const cmd = settings.hooks.SessionStart[0].hooks[0].command;

@@ -235,7 +235,7 @@ mnemo ships with hook scripts that wire it into Claude Code automatically.
 **Install:**
 
 ```bash
-mnemo install
+mnemo install claude-code
 ```
 
 This creates `~/.mnemo/config.json` (if it doesn't exist) and installs hooks into `~/.claude/settings.json` (SessionStart for recall, UserPromptSubmit for push). If you cloned mnemo to a non-standard location, pass `--hooks-dir /path/to/mnemo/hooks`.

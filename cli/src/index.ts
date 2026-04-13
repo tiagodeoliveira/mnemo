@@ -76,11 +76,13 @@ program
 
 program
   .command('install')
-  .description('Create mnemo config and install Claude Code hooks')
+  .description('Create mnemo config and install hooks for an AI client')
+  .argument('<client>', 'Client to integrate with (e.g., claude-code)')
   .option('--hooks-dir <path>', 'Path to hooks directory')
-  .action((opts) => {
+  .action((client, opts) => {
     try {
       const result = installHooks({
+        client,
         hooksDir: opts.hooksDir,
       });
 
