@@ -41,35 +41,3 @@ export interface RecallResponse {
     memories: MemoryRecord[];
   };
 }
-
-export interface MemoryProviderProperties {
-  memoryName: string;
-  description: string;
-  actorId: string;
-  eventExpiryDuration: number;
-  strategies: MemoryStrategyConfig;
-}
-
-export interface MemoryStrategyConfig {
-  userPreference: {
-    name: string;
-    namespaceTemplates: string[];
-  };
-  semantic: {
-    name: string;
-    namespaceTemplates: string[];
-  };
-  episodic: {
-    name: string;
-    namespaceTemplates: string[];
-    reflectionNamespaceTemplates: string[];
-  };
-  projectContext: {
-    name: string;
-    triggerMessageCount: number;
-    idleSessionTimeout: number;
-    snsTopicArn: string;
-    s3BucketName: string;
-    historicalContextWindowSize: number;
-  };
-}
