@@ -20,7 +20,7 @@ if [ -z "$SESSION_ID" ] || [ -z "$TRANSCRIPT_PATH" ]; then
 fi
 
 # Batch every N user prompts
-BATCH_SIZE="${MNEMO_BATCH_SIZE:-5}"
+BATCH_SIZE="${MNEMO_BATCH_SIZE:-3}"
 COUNTER_DIR="/tmp/mnemo"
 COUNTER_FILE="$COUNTER_DIR/$SESSION_ID.count"
 

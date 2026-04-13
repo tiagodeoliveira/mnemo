@@ -193,7 +193,7 @@ Open `~/.mnemo/config.json` and fill in the values from the deploy outputs:
 - `workstation` — friendly name for this machine. Defaults to hostname if omitted.
 - `visible` — when `true`, recalled memories are shown as markdown in the conversation. When `false`, they're injected as a silent JSON system message.
 
-The push hook batches every 5 prompts by default — set `MNEMO_BATCH_SIZE` environment variable to change it.
+The push hook batches every 3 prompts by default — set `MNEMO_BATCH_SIZE` environment variable to change it.
 
 ## Usage
 
@@ -235,7 +235,7 @@ Once hooks are configured, mnemo works automatically:
 1. Start a Claude Code session in a git repo
 2. The session-start hook fires, detects the project from the git folder name, and runs `mnemo recall --project <name> --task coding --date <today> --format hook --no-episodes`
 3. Recalled memories are injected as hidden context into the conversation
-4. As you work, every 5th prompt triggers a background push of recent turns
+4. As you work, every 3rd prompt triggers a background push of recent turns
 5. AgentCore extracts preferences, facts, and episodes from the conversation
 6. The context extractor classifies the task domain, extracts project-specific facts, and writes a daily summary
 
