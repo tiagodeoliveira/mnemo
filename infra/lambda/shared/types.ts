@@ -8,6 +8,7 @@ export interface EventContext {
   workstation: string;
   workdir: string;
   timestamp: string;
+  source?: string;
 }
 
 export interface IngestRequest {
@@ -29,6 +30,14 @@ export interface RecallResponse {
   episodes: MemoryRecord[];
   project?: {
     name: string;
+    memories: MemoryRecord[];
+  };
+  tasks?: {
+    name: string;
+    memories: MemoryRecord[];
+  };
+  daily?: {
+    date: string;
     memories: MemoryRecord[];
   };
 }
