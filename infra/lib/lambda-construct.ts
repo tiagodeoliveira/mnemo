@@ -19,7 +19,7 @@ export interface LambdaConstructProps {
 export class LambdaConstruct extends Construct {
   public readonly ingestFunction: lambda.IFunction;
   public readonly recallFunction: lambda.IFunction;
-  public readonly projectExtractorFunction: lambda.IFunction;
+  public readonly contextExtractorFunction: lambda.IFunction;
 
   constructor(scope: Construct, id: string, props: LambdaConstructProps) {
     super(scope, id);
@@ -64,8 +64,8 @@ export class LambdaConstruct extends Construct {
     });
     (this.recallFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
 
-    this.projectExtractorFunction = new NodejsFunction(this, 'ProjectExtractorFn', {
-      entry: path.join(lambdaDir, 'project-extractor', 'index.ts'),
+    this.contextExtractorFunction = new NodejsFunction(this, 'ContextExtractorFn', {
+      entry: path.join(lambdaDir, 'context-extractor', 'index.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
       timeout: cdk.Duration.minutes(5),
@@ -77,17 +77,17 @@ export class LambdaConstruct extends Construct {
         nodeModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
-    (this.projectExtractorFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
-    this.projectExtractorFunction.addToRolePolicy(
+    (this.contextExtractorFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
+    this.contextExtractorFunction.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: ['*'],
       })
     );
 
-    props.payloadBucket.grantRead(this.projectExtractorFunction);
+    props.payloadBucket.grantRead(this.contextExtractorFunction);
     props.snsTopic.addSubscription(
-      new snsSubscriptions.LambdaSubscription(this.projectExtractorFunction)
+      new snsSubscriptions.LambdaSubscription(this.contextExtractorFunction)
     );
   }
 }
