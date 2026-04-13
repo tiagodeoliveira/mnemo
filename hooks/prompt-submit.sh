@@ -45,12 +45,14 @@ if [ -n "$CWD" ] && git -C "$CWD" rev-parse --show-toplevel >/dev/null 2>&1; the
   PROJECT=$(basename "$(git -C "$CWD" rev-parse --show-toplevel)")
 fi
 
-# Extract recent turns from JSONL transcript.
-# Take the last 200 lines, filter to user/assistant entries, extract text content.
-# User messages: only include when .message.content is a string (actual human prompt),
-#   skip tool_result arrays which are just tool outputs fed back.
-# Assistant messages: extract only text blocks, skip tool_use-only messages.
-TURNS=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null | jq -c '
+# Extract recent entries from JSONL transcript (last 200 lines).
+RECENT=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null)
+
+# 1. Conversation turns: user text prompts + assistant text responses.
+#    User messages: only include when .message.content is a string (actual human prompt),
+#      skip tool_result arrays which are just tool outputs fed back.
+#    Assistant messages: extract only text blocks, skip tool_use-only messages.
+TURNS=$(echo "$RECENT" | jq -c '
   select(.type == "user" or .type == "assistant") |
   if .type == "user" then
     if (.message.content | type) == "string" then
@@ -67,6 +69,40 @@ TURNS=$(tail -200 "$TRANSCRIPT_PATH" 2>/dev/null | jq -c '
 
 if [ "$TURNS" = "[]" ] || [ -z "$TURNS" ]; then
   exit 0
+fi
+
+# 2. Session activity summary: extract tool_use blocks from assistant messages
+#    to capture which files were read/edited/written and what commands ran.
+#    This gives the context extractor structural signal about the actual work done.
+#    File paths are made relative to the working directory for readability.
+ACTIVITY=$(echo "$RECENT" | jq -r --arg cwd "${CWD%/}/" '
+  select(.type == "assistant") |
+  [.message.content[]? | select(.type == "tool_use") |
+    if .name == "Read" then "read:" + (.input.file_path | ltrimstr($cwd))
+    elif .name == "Edit" then "edit:" + (.input.file_path | ltrimstr($cwd))
+    elif .name == "Write" then "write:" + (.input.file_path | ltrimstr($cwd))
+    elif .name == "Bash" then "bash:" + (.input.description // (.input.command | .[0:60]))
+    elif .name == "Grep" then "grep:" + .input.pattern
+    elif .name == "Glob" then "glob:" + .input.pattern
+    else empty
+    end
+  ] | .[]
+' 2>/dev/null | sort -u | jq -Rsc '
+  split("\n") | map(select(. != "")) |
+  group_by(split(":")[0]) |
+  map(
+    (.[0] | split(":")[0]) as $op |
+    ($op + "=" + (map(split(":")[1:] | join(":")) | join(", ")))
+  ) | join(" | ")
+' 2>/dev/null || echo '""')
+
+# Prepend activity summary as a tool turn so the extractor sees what happened
+if [ "$ACTIVITY" != '""' ] && [ -n "$ACTIVITY" ]; then
+  ACTIVITY_TEXT=$(echo "$ACTIVITY" | jq -r '.')
+  if [ -n "$ACTIVITY_TEXT" ]; then
+    TURNS=$(echo "$TURNS" | jq --arg activity "[session-activity: $ACTIVITY_TEXT]" \
+      '[{role: "tool", content: $activity}] + .' 2>/dev/null || echo "$TURNS")
+  fi
 fi
 
 # Push in background

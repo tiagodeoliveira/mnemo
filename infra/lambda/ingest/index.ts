@@ -10,7 +10,7 @@ const client = new BedrockAgentCoreClient({});
 const ROLE_MAP: Record<string, string> = {
   user: 'USER',
   assistant: 'ASSISTANT',
-  tool: 'TOOL',
+  tool: 'OTHER',
 };
 
 export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
