@@ -84,4 +84,39 @@ describe('recall lambda', () => {
     expect(body.preferences[0].content).toBe('prefers TypeScript');
     expect(body.preferences[0].score).toBe(0.95);
   });
+
+  it('queries 5 namespaces with project and task', async () => {
+    const result = await handler(makeEvent({ project: 'mnemo', task: 'coding' }));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockSend).toHaveBeenCalledTimes(5);
+    expect(body.project).toBeDefined();
+    expect(body.project.name).toBe('mnemo');
+    expect(body.tasks).toBeDefined();
+    expect(body.tasks.name).toBe('coding');
+  });
+
+  it('queries 4 namespaces with date only', async () => {
+    const result = await handler(makeEvent({ date: '2026-04-13' }));
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockSend).toHaveBeenCalledTimes(4);
+    expect(body.daily).toBeDefined();
+    expect(body.daily.date).toBe('2026-04-13');
+  });
+
+  it('queries all 6 namespaces with project, task, and date', async () => {
+    const result = await handler(
+      makeEvent({ project: 'mnemo', task: 'coding', date: '2026-04-13' })
+    );
+    const body = JSON.parse(result.body);
+
+    expect(result.statusCode).toBe(200);
+    expect(mockSend).toHaveBeenCalledTimes(6);
+    expect(body.project.name).toBe('mnemo');
+    expect(body.tasks.name).toBe('coding');
+    expect(body.daily.date).toBe('2026-04-13');
+  });
 });
