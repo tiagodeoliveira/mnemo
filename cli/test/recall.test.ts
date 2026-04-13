@@ -78,6 +78,22 @@ describe('recall command', () => {
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('date=2026-04-13');
   });
+
+  it('throws on non-ok response', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve('Service Unavailable'),
+    });
+
+    await expect(
+      executeRecall({
+        apiUrl: 'https://api.example.com/v1',
+        apiKey: 'key',
+        workstation: 'laptop',
+      })
+    ).rejects.toThrow('503');
+  });
 });
 
 describe('formatRecallOutput', () => {
