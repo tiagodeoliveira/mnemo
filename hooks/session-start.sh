@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+command -v mnemo >/dev/null 2>&1 || exit 0
 
 # mnemo session start hook (SessionStart)
 # Reads hook input from stdin, detects project, recalls memories.
