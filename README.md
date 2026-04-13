@@ -1,16 +1,16 @@
 # mnemo
 
-Centralized AI memory system that captures Claude Code interactions, stores them in Amazon Bedrock AgentCore Memory, and recalls relevant context when starting new sessions — on any workstation.
+Centralized AI memory system built on Amazon Bedrock AgentCore Memory. Any AI tool can push conversation turns and recall relevant context through a simple REST API — preferences, facts, project decisions, and daily summaries follow you across sessions and workstations.
 
-CLAUDE.md is static. mnemo makes your coding preferences, project decisions, and architectural choices dynamic and portable across machines.
+Ships with a CLI and Claude Code hooks as the first integration, but the API is client-agnostic.
 
 ## How it works
 
-mnemo sits between Claude Code and Bedrock AgentCore Memory through a REST API. Clients never touch AWS directly.
+mnemo exposes a REST API backed by Bedrock AgentCore Memory. Clients never touch AWS directly — they push conversation turns and recall memories through `POST /events` and `GET /recall`.
 
-**Write path:** Claude Code hook fires on every Nth prompt, batches recent turns, sends them to `POST /events`. The Ingest Lambda maps turns to AgentCore's `CreateEvent` API. AgentCore asynchronously extracts memories using its built-in strategies and triggers the context extractor for self-managed ones.
+**Write path:** A client sends conversation turns to `POST /events`. The Ingest Lambda maps them to AgentCore's `CreateEvent` API. AgentCore asynchronously extracts memories using its built-in strategies and triggers the context extractor for self-managed ones.
 
-**Read path:** Claude Code hook fires at session start, calls `GET /recall`. The Recall Lambda queries 3–6 namespace prefixes in parallel (depending on whether project, task, and date are provided) and merges the results.
+**Read path:** A client calls `GET /recall` with optional project, task, and date parameters. The Recall Lambda queries 3–6 namespace prefixes in parallel and merges the results.
 
 ### Memory dimensions
 
@@ -30,9 +30,9 @@ Task domain classification uses a configurable list of domains (default: `coding
 ### Architecture
 
 ```
-Claude Code hooks
+Any AI client (hooks, scripts, tools)
       |
-   mnemo CLI
+   mnemo CLI  or  direct API call
       |
   API Gateway (API key auth)
       |
@@ -84,7 +84,7 @@ mnemo/
         recall.ts           Fetch memories from API
         install-hooks.ts    Install config + Claude Code hooks
     test/                   CLI unit tests (5 files)
-  hooks/                    Claude Code hook scripts
+  hooks/                    Claude Code integration (first supported client)
     session-start.sh        Recall memories at session start
     prompt-submit.sh        Batch and push turns during session
     settings.example.json   Example Claude Code settings
@@ -99,7 +99,7 @@ mnemo/
 - AWS account with CDK bootstrapped (`npx cdk bootstrap`)
 - AWS CLI configured with credentials
 - Bedrock AgentCore Memory access enabled in your region
-- `jq` installed (used by hook scripts)
+- `jq` installed (used by the Claude Code hook scripts)
 
 **Important:** The `@aws-sdk/client-bedrock-agentcore` package must be available in the Lambda runtime for the ingest, recall, and context-extractor functions. This package is pre-installed in the Node.js 22 Lambda runtime. The CDK stack uses the native `AWS::BedrockAgentCore::Memory` CloudFormation resource, so no control-plane SDK is needed at deploy time.
 
@@ -159,23 +159,7 @@ Run `npm link` from the monorepo root, or alternatively `cd cli && npm link`.
 
 This makes the `mnemo` command available globally.
 
-### 6. Run the installer
-
-```bash
-mnemo install
-```
-
-This does two things:
-- Creates `~/.mnemo/config.json` with placeholder values
-- Installs Claude Code hooks into `~/.claude/settings.json` (SessionStart for recall, UserPromptSubmit for push)
-
-If you cloned mnemo to a non-standard location, pass the hooks directory explicitly:
-
-```bash
-mnemo install --hooks-dir /path/to/mnemo/hooks
-```
-
-### 7. Edit the mnemo config
+### 6. Edit the mnemo config
 
 Open `~/.mnemo/config.json` and fill in the values from the deploy outputs:
 
@@ -191,22 +175,20 @@ Open `~/.mnemo/config.json` and fill in the values from the deploy outputs:
 ```
 
 - `workstation` — friendly name for this machine. Defaults to hostname if omitted.
-- `visible` — when `true`, recalled memories are shown as markdown in the conversation. When `false`, they're injected as a silent JSON system message.
-
-The push hook batches every 3 prompts by default — set `MNEMO_BATCH_SIZE` environment variable to change it.
+- `visible` — when `true`, recalled memories are shown as markdown. When `false`, they're returned as a JSON structure suitable for programmatic injection.
 
 ## Usage
 
-### Manual testing with the CLI
+### CLI
 
-Push a test event:
+Push conversation turns:
 
 ```bash
 mnemo push \
   --session "test-$(date +%s)" \
   --turns '[{"role":"user","content":"I prefer TypeScript with strict mode"},{"role":"assistant","content":"Noted, I will use strict TypeScript."}]' \
   --project mnemo \
-  --source claude-code \
+  --source my-tool \
   --workdir "$(pwd)"
 ```
 
@@ -226,26 +208,18 @@ mnemo recall --project mnemo --format hook --no-episodes
 
 Output format is controlled by `--format`:
 - `visible` — human-readable markdown
-- `hook` — Claude Code JSON structure for hook injection (sets `visible: false` internally)
+- `hook` — JSON structure for programmatic injection (sets `visible: false` internally)
 
-### How it looks in practice
+### Direct API access
 
-Once hooks are configured, mnemo works automatically:
-
-1. Start a Claude Code session in a git repo
-2. The session-start hook fires, detects the project from the git folder name, and runs `mnemo recall --project <name> --task coding --date <today> --format hook --no-episodes`
-3. Recalled memories are injected as hidden context into the conversation
-4. As you work, every 3rd prompt triggers a background push of recent turns
-5. AgentCore extracts preferences, facts, and episodes from the conversation
-6. The context extractor classifies the task domain, extracts project-specific facts, and writes a daily summary
-
-Both hooks include a `command -v mnemo` guard — if the CLI isn't installed on a machine, the hooks silently exit without errors.
-
-Next time you start a session — on any machine with mnemo configured — those memories are recalled automatically.
-
-### Viewing raw API responses
+Any client can use the REST API directly:
 
 ```bash
+# Push turns
+curl -s -X POST -H "x-api-key: <key>" -H "Content-Type: application/json" \
+  "https://<api-url>/v1/events" \
+  -d '{"sessionId":"s1","turns":[{"role":"user","content":"hello"}]}'
+
 # Full recall with all dimensions
 curl -s -H "x-api-key: <key>" \
   "https://<api-url>/v1/recall?project=mnemo&task=coding&date=2026-04-13" | jq
@@ -253,3 +227,27 @@ curl -s -H "x-api-key: <key>" \
 # Global memories only (no project/task/daily)
 curl -s -H "x-api-key: <key>" "https://<api-url>/v1/recall" | jq
 ```
+
+### Claude Code integration
+
+mnemo ships with hook scripts that wire it into Claude Code automatically.
+
+**Install:**
+
+```bash
+mnemo install
+```
+
+This creates `~/.mnemo/config.json` (if it doesn't exist) and installs hooks into `~/.claude/settings.json` (SessionStart for recall, UserPromptSubmit for push). If you cloned mnemo to a non-standard location, pass `--hooks-dir /path/to/mnemo/hooks`.
+
+**How it works in practice:**
+
+1. Start a Claude Code session in a git repo
+2. The session-start hook detects the project and runs `mnemo recall --project <name> --task coding --date <today> --format hook --no-episodes`
+3. Recalled memories are injected as hidden context into the conversation
+4. Every 3rd prompt triggers a background push of recent turns (configurable via `MNEMO_BATCH_SIZE`)
+5. AgentCore extracts preferences, facts, and episodes; the context extractor writes project, task, and daily memories
+
+Both hooks include a `command -v mnemo` guard — if the CLI isn't installed on a machine, the hooks silently exit without errors.
+
+Next session — on any machine with mnemo configured — those memories are recalled automatically.
