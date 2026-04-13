@@ -74,7 +74,7 @@ export class LambdaConstruct extends Construct {
       timeout: cdk.Duration.minutes(5),
       environment: {
         ...commonEnv,
-        MODEL_ID: props.modelId || 'anthropic.claude-sonnet-4-6',
+        MODEL_ID: props.modelId || 'us.anthropic.claude-sonnet-4-6',
         TASK_DOMAINS: taskDomains.join(','),
       },
       bundling: {

@@ -109,7 +109,7 @@ describe('context-extractor lambda', () => {
     vi.clearAllMocks();
     process.env.MEMORY_ID = 'mem-123';
     process.env.ACTOR_ID = 'tiago';
-    process.env.MODEL_ID = 'anthropic.claude-sonnet-4-6';
+    process.env.MODEL_ID = 'us.anthropic.claude-sonnet-4-6';
     process.env.TASK_DOMAINS = 'coding,studying,meeting,general';
     mockAgentCoreSend.mockResolvedValue({
       successfulRecords: [{ memoryRecordId: 'rec-1', status: 'SUCCEEDED' }],

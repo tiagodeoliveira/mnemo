@@ -186,7 +186,7 @@ async function callLlm(conversation: string, allowedDomains: string[]): Promise<
   const prompt = buildExtractionPrompt(allowedDomains);
   const response = await bedrock.send(
     new InvokeModelCommand({
-      modelId: process.env.MODEL_ID || 'anthropic.claude-sonnet-4-6',
+      modelId: process.env.MODEL_ID || 'us.anthropic.claude-sonnet-4-6',
       body: JSON.stringify({
         anthropic_version: 'bedrock-2023-05-31',
         max_tokens: 1024,
