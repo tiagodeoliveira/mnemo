@@ -78,7 +78,7 @@ export class LambdaConstruct extends Construct {
         TASK_DOMAINS: taskDomains.join(','),
       },
       bundling: {
-        nodeModules: ['@aws-sdk/client-bedrock-agentcore'],
+        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.contextExtractorFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
