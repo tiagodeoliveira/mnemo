@@ -14,13 +14,29 @@ export interface InstallHooksResult {
   mnemoConfigPath: string;
 }
 
+interface HookCommand {
+  type: string;
+  command: string;
+  timeout?: number;
+}
+
+interface HookEntry {
+  matcher: string;
+  hooks: HookCommand[];
+}
+
+interface ClaudeSettings {
+  hooks?: Record<string, HookEntry[]>;
+  [key: string]: unknown;
+}
+
 function defaultHooksDir(): string {
   return path.resolve(__dirname, '..', '..', '..', 'hooks');
 }
 
-function containsMnemoHook(hookEntries: any[]): boolean {
-  return hookEntries.some((entry: any) =>
-    entry.hooks?.some((h: any) => typeof h.command === 'string' && h.command.includes('mnemo'))
+function containsMnemoHook(hookEntries: HookEntry[]): boolean {
+  return hookEntries.some((entry) =>
+    entry.hooks?.some((h) => h.command.includes('mnemo'))
   );
 }
 
@@ -48,9 +64,9 @@ export function installHooks(options: InstallHooksOptions = {}): InstallHooksRes
     configCreated = true;
   }
 
-  let settings: any = {};
+  let settings: ClaudeSettings = {};
   if (fs.existsSync(claudeSettingsPath)) {
-    settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8'));
+    settings = JSON.parse(fs.readFileSync(claudeSettingsPath, 'utf-8')) as ClaudeSettings;
   }
 
   if (!settings.hooks) {
