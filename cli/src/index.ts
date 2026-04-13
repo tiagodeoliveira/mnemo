@@ -47,6 +47,8 @@ program
   .command('recall')
   .description('Recall memories for current context')
   .option('--project <name>', 'Project name (auto-detected from git)')
+  .option('--task <name>', 'Task domain (e.g., coding, studying, meeting)')
+  .option('--date <yyyy-mm-dd>', 'Date for daily summary')
   .action(async (opts) => {
     try {
       const config = loadConfig();
@@ -57,6 +59,8 @@ program
         apiKey: config.apiKey,
         project,
         workstation: config.workstation,
+        task: opts.task,
+        date: opts.date,
       });
 
       const output = formatRecallOutput(response, config.defaults.visible);

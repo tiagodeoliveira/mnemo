@@ -3,6 +3,8 @@ export interface RecallOptions {
   apiKey: string;
   project?: string;
   workstation: string;
+  task?: string;
+  date?: string;
 }
 
 interface MemoryRecord {
@@ -20,11 +22,21 @@ interface RecallResponse {
     name: string;
     memories: MemoryRecord[];
   };
+  tasks?: {
+    name: string;
+    memories: MemoryRecord[];
+  };
+  daily?: {
+    date: string;
+    memories: MemoryRecord[];
+  };
 }
 
 export async function executeRecall(options: RecallOptions): Promise<RecallResponse> {
   const params = new URLSearchParams();
   if (options.project) params.set('project', options.project);
+  if (options.task) params.set('task', options.task);
+  if (options.date) params.set('date', options.date);
   params.set('workstation', options.workstation);
 
   const url = `${options.apiUrl}/recall?${params.toString()}`;
@@ -116,6 +128,14 @@ export function formatRecallOutput(response: RecallResponse, visible: boolean): 
 
   if (response.project) {
     sections.push(formatBulletSection(`Project: ${response.project.name}`, response.project.memories, (c) => c));
+  }
+
+  if (response.tasks) {
+    sections.push(formatBulletSection(`Task: ${response.tasks.name}`, response.tasks.memories, (c) => c));
+  }
+
+  if (response.daily) {
+    sections.push(formatBulletSection(`Daily: ${response.daily.date}`, response.daily.memories, (c) => c));
   }
 
   const content = sections.filter(Boolean).join('\n');

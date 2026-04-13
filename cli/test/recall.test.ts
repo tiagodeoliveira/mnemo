@@ -53,6 +53,31 @@ describe('recall command', () => {
     const [url] = mockFetch.mock.calls[0];
     expect(url).toBe('https://api.example.com/v1/recall?workstation=laptop');
   });
+
+  it('passes task param to /recall', async () => {
+    await executeRecall({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      project: 'mnemo',
+      workstation: 'laptop',
+      task: 'coding',
+    });
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('task=coding');
+  });
+
+  it('passes date param to /recall', async () => {
+    await executeRecall({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      workstation: 'laptop',
+      date: '2026-04-13',
+    });
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('date=2026-04-13');
+  });
 });
 
 describe('formatRecallOutput', () => {
@@ -168,5 +193,30 @@ describe('formatRecallOutput', () => {
     };
     const output = formatRecallOutput(response, true);
     expect(output).toContain('Plain text episode about debugging session');
+  });
+
+  it('formats tasks and daily sections', () => {
+    const response = {
+      preferences: [],
+      facts: [],
+      episodes: [],
+      tasks: {
+        name: 'coding',
+        memories: [
+          { id: 't1', content: 'Prefers TDD workflow', score: 0.9, createdAt: '' },
+        ],
+      },
+      daily: {
+        date: '2026-04-13',
+        memories: [
+          { id: 'd1', content: 'Worked on mnemo context extractor', score: 0.85, createdAt: '' },
+        ],
+      },
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('## Task: coding');
+    expect(output).toContain('Prefers TDD workflow');
+    expect(output).toContain('## Daily: 2026-04-13');
+    expect(output).toContain('Worked on mnemo context extractor');
   });
 });
