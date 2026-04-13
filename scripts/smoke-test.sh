@@ -27,7 +27,11 @@ API_URL=$(jq -r '.apiUrl' "$CONFIG_FILE")
 API_KEY=$(jq -r '.apiKey' "$CONFIG_FILE")
 WORKSTATION=$(jq -r '.workstation // "test"' "$CONFIG_FILE")
 
-SESSION_ID="smoke-test-$(date +%s)"
+TS=$(date +%s)
+SESSION_CODING="smoke-coding-$TS"
+SESSION_STUDYING="smoke-studying-$TS"
+SESSION_MEETING="smoke-meeting-$TS"
+SESSION_GENERAL="smoke-general-$TS"
 PROJECT="mnemo"
 WORKDIR="$PROJECT_DIR"
 WAIT_SECONDS="${MNEMO_SMOKE_WAIT:-90}"
@@ -43,11 +47,12 @@ push_event() {
   local event_num="$1"
   local label="$2"
   local turns="$3"
-  local project_override="${4:-$PROJECT}"
+  local session_id="$4"
+  local project_override="${5:-}"
 
   local payload
   payload=$(jq -n \
-    --arg sid "$SESSION_ID" \
+    --arg sid "$session_id" \
     --arg project "$project_override" \
     --arg ws "$WORKSTATION" \
     --arg wd "$WORKDIR" \
@@ -198,8 +203,11 @@ tail_logs() {
 
 do_push() {
   echo -e "${CYAN}=== mnemo smoke test — multi-dimensional memory ===${NC}"
-  echo -e "Session: ${YELLOW}$SESSION_ID${NC}"
-  echo -e "Date:    ${YELLOW}$TODAY${NC}"
+  echo -e "Sessions: coding=${YELLOW}$SESSION_CODING${NC}"
+  echo -e "          studying=${YELLOW}$SESSION_STUDYING${NC}"
+  echo -e "          meeting=${YELLOW}$SESSION_MEETING${NC}"
+  echo -e "          general=${YELLOW}$SESSION_GENERAL${NC}"
+  echo -e "Date:     ${YELLOW}$TODAY${NC}"
   echo
 
   # ─────────────────────────────────────────────
@@ -212,7 +220,7 @@ do_push() {
     {"role":"assistant","content":"I suggest a REST API architecture: API Gateway with POST /events for ingesting and GET /recall for retrieving. AgentCore Memory automatically extracts user preferences, semantic facts, and episodic memories. For project-specific context, we use a self-managed custom strategy triggered via SNS."},
     {"role":"user","content":"What about infrastructure? I want this fully automated with CDK."},
     {"role":"assistant","content":"CDK is the right choice. We will use CfnMemory for the AgentCore Memory lifecycle. The stack has three constructs: MemoryConstruct, LambdaConstruct, and ApiConstruct."}
-  ]'
+  ]' "$SESSION_CODING" "$PROJECT"
   sleep 1
 
   push_event 2 "TypeScript preferences" '[
@@ -220,7 +228,7 @@ do_push() {
     {"role":"assistant","content":"All Lambdas will use NodejsFunction with NODEJS_22_X runtime and esbuild bundling."},
     {"role":"user","content":"For testing, I prefer vitest with aws-sdk-client-mock."},
     {"role":"assistant","content":"I will set up vitest for both infra and cli workspaces. CDK tests use Template.fromStack assertions."}
-  ]'
+  ]' "$SESSION_CODING" "$PROJECT"
   sleep 1
 
   push_event 3 "IAM debugging" '[
@@ -228,7 +236,7 @@ do_push() {
     {"role":"assistant","content":"The execution role needs both identity-based AND resource-based policies for SNS. The correct service principal is bedrock-agentcore.amazonaws.com, not bedrock.amazonaws.com."},
     {"role":"user","content":"Memory names cannot have hyphens either."},
     {"role":"assistant","content":"Correct. AgentCore Memory names must match [a-zA-Z][a-zA-Z0-9_]{0,47}. Use mnemo_memory instead of mnemo-memory."}
-  ]'
+  ]' "$SESSION_CODING" "$PROJECT"
   sleep 2
 
   # ─────────────────────────────────────────────
@@ -241,7 +249,7 @@ do_push() {
     {"role":"assistant","content":"Raft is designed for understandability. It separates leader election, log replication, and safety. Unlike Paxos which allows any node to be a proposer, Raft uses a strong leader model. Leaders handle all client requests and replicate to followers. This simplifies reasoning about the protocol."},
     {"role":"user","content":"What about the split-brain problem?"},
     {"role":"assistant","content":"Raft prevents split-brain through its term system. Each leader has a unique term number. If a network partition occurs, only the partition with a majority can elect a leader and make progress. The minority partition cannot get enough votes and stalls until the partition heals."}
-  ]' ""
+  ]' "$SESSION_STUDYING" ""
   sleep 1
 
   push_event 5 "Database internals" '[
@@ -249,7 +257,7 @@ do_push() {
     {"role":"assistant","content":"LSM trees buffer writes in memory (memtable), flush to sorted files (SSTables) on disk, and periodically compact them. Writes are always sequential, making them fast. Reads may check multiple levels. RocksDB adds bloom filters and block caches to optimize read performance."},
     {"role":"user","content":"When would you choose LSM over B-tree?"},
     {"role":"assistant","content":"LSM trees excel at write-heavy workloads with good sequential I/O. B-trees are better for read-heavy workloads and point lookups. LSM trees have write amplification during compaction but lower write latency. B-trees have more predictable read latency but higher write latency due to random I/O."}
-  ]' ""
+  ]' "$SESSION_STUDYING" ""
   sleep 2
 
   # ─────────────────────────────────────────────
@@ -262,13 +270,13 @@ do_push() {
     {"role":"assistant","content":"Architecture Review Summary: The team agreed on a strangler fig pattern for the migration. Alice proposed starting with the authentication service since it has the clearest boundaries. Bob raised concerns about distributed transactions in the order processing flow. Decision: authentication service migrates first (target Q3), order processing stays in the monolith until a saga pattern proof-of-concept is completed."},
     {"role":"user","content":"What were the action items?"},
     {"role":"assistant","content":"Action items from the meeting: 1) Alice: draft authentication service API contract by Friday. 2) Bob: prototype saga pattern for order processing, 2-week spike. 3) You: set up the new service mesh infrastructure using Istio. 4) All: review Alice API contract in next weeks meeting."}
-  ]' ""
+  ]' "$SESSION_MEETING" ""
   sleep 1
 
   push_event 7 "Sprint retrospective" '[
     {"role":"user","content":"Capture the key points from our sprint retrospective. The team felt velocity was good but code review turnaround was slow."},
     {"role":"assistant","content":"Sprint Retrospective: Velocity was 42 points (up from 38). Main bottleneck: code reviews averaging 2 days. Proposal: dedicate first hour each morning to reviews. Team agreed on a 24-hour SLA for initial review feedback. Also discussed adding automated linting to reduce back-and-forth on style issues."}
-  ]' ""
+  ]' "$SESSION_MEETING" ""
   sleep 2
 
   # ─────────────────────────────────────────────
@@ -281,13 +289,13 @@ do_push() {
     {"role":"assistant","content":"November is excellent for Japan — its autumn foliage season (koyo). Kyoto and Nikko are especially stunning. Weather is mild (10-18C). Key tips: get a Japan Rail Pass for bullet trains, book ryokans early for the foliage season, and visit temples early morning to avoid crowds. The Fushimi Inari shrine is best at dawn."},
     {"role":"user","content":"How about the food scene?"},
     {"role":"assistant","content":"Japan in autumn features seasonal specialties: matsutake mushrooms, sanma (pacific saury), and sweet potatoes. Every region has unique dishes — Osaka for takoyaki and okonomiyaki, Tokyo for sushi and ramen. Budget around 3000-5000 yen per meal at mid-range restaurants. Department store basement food halls (depachika) are incredible for sampling."}
-  ]' ""
+  ]' "$SESSION_GENERAL" ""
   sleep 1
 
   push_event 9 "Book recommendation" '[
     {"role":"user","content":"Recommend a book on systems thinking for someone with an engineering background."},
     {"role":"assistant","content":"Thinking in Systems by Donella Meadows is the classic introduction. For an engineering perspective, try The Art of Systems Thinking by Joseph O Connor. If you want something more applied to software, Thinking in Systems for Software Engineers covers feedback loops, emergence, and resilience in distributed systems."}
-  ]' ""
+  ]' "$SESSION_GENERAL" ""
 
   echo -e "\n${GREEN}All 9 events pushed across 4 task domains${NC}"
 }
@@ -336,7 +344,8 @@ case "$MODE" in
     do_recall "meeting" "meeting"
     do_recall "general" "general"
     echo -e "\n${CYAN}=== Test complete (no cleanup) ===${NC}"
-    echo -e "Session ID: ${YELLOW}$SESSION_ID${NC}"
+    echo -e "Sessions: coding=${YELLOW}$SESSION_CODING${NC} studying=${YELLOW}$SESSION_STUDYING${NC}"
+    echo -e "          meeting=${YELLOW}$SESSION_MEETING${NC} general=${YELLOW}$SESSION_GENERAL${NC}"
     echo -e "To recall:   ${YELLOW}mnemo recall --project $PROJECT --task coding${NC}"
     echo -e "To cleanup:  ${YELLOW}$0 --cleanup${NC}"
     ;;
@@ -351,6 +360,5 @@ case "$MODE" in
     do_recall "general" "general"
     do_cleanup
     echo -e "\n${CYAN}=== Test complete ===${NC}"
-    echo -e "Session ID: ${YELLOW}$SESSION_ID${NC}"
     ;;
 esac
