@@ -18,7 +18,19 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): MnemoConfi
     throw new Error(`Config file not found: ${configPath}. Run 'mnemo install' to create one.`);
   }
 
-  const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  let raw: any;
+  try {
+    raw = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch {
+    throw new Error(`Invalid JSON in config file: ${configPath}`);
+  }
+
+  if (!raw.apiUrl || typeof raw.apiUrl !== 'string') {
+    throw new Error(`Missing or invalid apiUrl in config: ${configPath}. Run 'mnemo install' to create one.`);
+  }
+  if (!raw.apiKey || typeof raw.apiKey !== 'string') {
+    throw new Error(`Missing or invalid apiKey in config: ${configPath}. Run 'mnemo install' to create one.`);
+  }
 
   return {
     apiUrl: raw.apiUrl,

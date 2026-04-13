@@ -46,4 +46,41 @@ describe('config loader', () => {
   it('throws when config file not found', () => {
     expect(() => loadConfig('/nonexistent/config.json')).toThrow();
   });
+
+  it('throws when apiUrl is missing', () => {
+    const config = {
+      apiKey: 'test-key',
+      defaults: { visible: true },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    expect(() => loadConfig(configPath)).toThrow('apiUrl');
+  });
+
+  it('throws when apiKey is missing', () => {
+    const config = {
+      apiUrl: 'https://api.example.com/v1',
+      defaults: { visible: true },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    expect(() => loadConfig(configPath)).toThrow('apiKey');
+  });
+
+  it('throws when apiUrl is empty string', () => {
+    const config = {
+      apiUrl: '',
+      apiKey: 'test-key',
+      defaults: { visible: true },
+    };
+    fs.writeFileSync(configPath, JSON.stringify(config));
+
+    expect(() => loadConfig(configPath)).toThrow('apiUrl');
+  });
+
+  it('throws when config file contains invalid JSON', () => {
+    fs.writeFileSync(configPath, 'not json at all');
+
+    expect(() => loadConfig(configPath)).toThrow();
+  });
 });
