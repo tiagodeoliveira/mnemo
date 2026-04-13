@@ -8,22 +8,24 @@ CLAUDE.md is static. mnemo makes your coding preferences, project decisions, and
 
 mnemo sits between Claude Code and Bedrock AgentCore Memory through a REST API. Clients never touch AWS directly.
 
-**Write path:** Claude Code hook fires on every Nth prompt, batches recent turns, sends them to `POST /events`. The Ingest Lambda maps turns to AgentCore's `CreateEvent` API. AgentCore asynchronously extracts memories using four strategies.
+**Write path:** Claude Code hook fires on every Nth prompt, batches recent turns, sends them to `POST /events`. The Ingest Lambda maps turns to AgentCore's `CreateEvent` API. AgentCore asynchronously extracts memories using its built-in strategies and triggers the context extractor for self-managed ones.
 
-**Read path:** Claude Code hook fires at session start, calls `GET /recall`. The Recall Lambda queries three namespace prefixes in parallel (four if inside a project) and merges the results.
+**Read path:** Claude Code hook fires at session start, calls `GET /recall`. The Recall Lambda queries 3–6 namespace prefixes in parallel (depending on whether project, task, and date are provided) and merges the results.
 
-### Memory strategies
+### Memory dimensions
 
-| Strategy | Type | Namespace | What it captures |
+| Dimension | Type | Namespace | What it captures |
 |---|---|---|---|
-| User Preferences | built-in | `/preferences/{actorId}/` | Coding style, standards, tool preferences |
-| Semantic Facts | built-in | `/facts/{actorId}/` | General knowledge and facts |
-| Episodic | built-in | `/episodes/{actorId}/` | Structured episodes with reflections (same namespace) |
-| Project Context | self-managed | `/projects/{actorId}/{projectName}/` | Architecture decisions, tech choices, project state |
+| Preferences | built-in | `/preferences/{actorId}/` | Coding style, standards, tool preferences |
+| Facts | built-in | `/facts/{actorId}/` | General knowledge and facts |
+| Episodes | built-in | `/episodes/{actorId}/` | Structured episodes with reflections |
+| Project | self-managed | `/projects/{actorId}/{projectName}/` | Architecture decisions, tech choices, project state |
+| Task | self-managed | `/tasks/{actorId}/{taskDomain}/` | Domain-specific insights (e.g., coding, studying, meeting) |
+| Daily | self-managed | `/daily/{actorId}/{YYYY-MM-DD}/` | 1–3 sentence activity summary per day |
 
-Built-in strategies are extracted automatically by AgentCore. The project context strategy is self-managed: AgentCore triggers an SNS notification, a Lambda reads the conversation payload from S3, uses a Bedrock model to extract project-specific facts, and writes them via `BatchCreateMemoryRecords`.
+Built-in strategies are extracted automatically by AgentCore. The self-managed dimensions (project, task, daily) are handled by the context extractor: AgentCore triggers an SNS notification, a Lambda reads the conversation payload from S3, uses Claude Sonnet to classify the task domain, extract facts, and write a daily summary via `BatchCreateMemoryRecords`.
 
-Project detection uses the git repo folder name. Sessions outside a git repo get global memories only (preferences, facts, episodes) — no project context.
+Task domain classification uses a configurable list of domains (default: `coding`, `studying`, `meeting`, `general`). Project detection uses the git repo folder name. Sessions outside a git repo get global memories only (preferences, facts, episodes) — no project context.
 
 ### Architecture
 
@@ -38,13 +40,20 @@ Claude Code hooks
   |                   |
 Ingest Lambda    Recall Lambda
   |                   |
-  CreateEvent    RetrieveMemoryRecords (x3-4 parallel)
+  CreateEvent    RetrieveMemoryRecords (x3-6 parallel)
   |
   AgentCore (async)
   |
-  +-----------+-----------+-----------+
-  |           |           |           |
-  UserPref  Semantic  Episodic   Custom (SNS -> Lambda -> BatchCreate)
+  +-----------+-----------+-----------+-----------------------------+
+  |           |           |           |                             |
+  Prefs    Facts     Episodes    Context Extractor (SNS -> Lambda)
+                                      |
+                                  Claude Sonnet
+                                      |
+                            +---------+---------+
+                            |         |         |
+                         Project    Task      Daily
+                      BatchCreate  per dimension
 ```
 
 ## Project structure
@@ -55,13 +64,16 @@ mnemo/
     bin/mnemo.ts            CDK app entry point
     lib/
       mnemo-stack.ts        Main stack, wires all constructs
-      memory-construct.ts   AgentCore Memory (CfnMemory), execution role, SNS, S3
+      memory-construct.ts   AgentCore Memory, execution role, SNS, S3, observability
       api-construct.ts      API Gateway + API key
       lambda-construct.ts   Lambda function definitions
     lambda/
       ingest/               POST /events handler
       recall/               GET /recall handler
-      project-extractor/    SNS-triggered project context extractor
+      context-extractor/    SNS-triggered multi-dimension extractor
+      observability-setup/  CloudWatch Logs + X-Ray delivery (custom resource)
+      shared/types.ts       Shared TypeScript types
+    test/                   Infra unit tests (7 files)
   cli/                      CLI tool (TypeScript)
     src/
       index.ts              Entry point (push, recall, install commands)
@@ -71,10 +83,14 @@ mnemo/
         push.ts             Send turns to API
         recall.ts           Fetch memories from API
         install-hooks.ts    Install config + Claude Code hooks
+    test/                   CLI unit tests (5 files)
   hooks/                    Claude Code hook scripts
     session-start.sh        Recall memories at session start
     prompt-submit.sh        Batch and push turns during session
     settings.example.json   Example Claude Code settings
+  scripts/
+    cleanup-memory.ts       Utility to delete memory records by namespace
+    smoke-test.sh           Integration test script
 ```
 
 ## Prerequisites
@@ -85,7 +101,7 @@ mnemo/
 - Bedrock AgentCore Memory access enabled in your region
 - `jq` installed (used by hook scripts)
 
-**Important:** The `@aws-sdk/client-bedrock-agentcore` package must be available in the Lambda runtime for the ingest, recall, and project-extractor functions. This package is pre-installed in the Node.js 22 Lambda runtime. The CDK stack uses the native `AWS::BedrockAgentCore::Memory` CloudFormation resource, so no control-plane SDK is needed at deploy time.
+**Important:** The `@aws-sdk/client-bedrock-agentcore` package must be available in the Lambda runtime for the ingest, recall, and context-extractor functions. This package is pre-installed in the Node.js 22 Lambda runtime. The CDK stack uses the native `AWS::BedrockAgentCore::Memory` CloudFormation resource, so no control-plane SDK is needed at deploy time.
 
 ## Deploy
 
@@ -190,36 +206,50 @@ mnemo push \
   --session "test-$(date +%s)" \
   --turns '[{"role":"user","content":"I prefer TypeScript with strict mode"},{"role":"assistant","content":"Noted, I will use strict TypeScript."}]' \
   --project mnemo \
+  --source claude-code \
   --workdir "$(pwd)"
 ```
 
 Recall memories:
 
 ```bash
-mnemo recall --project mnemo
+mnemo recall --project mnemo --task coding --date "$(date +%Y-%m-%d)"
 ```
 
-Without `--project`, only global memories (preferences, facts, episodes) are returned.
+Without `--project`, `--task`, or `--date`, only global memories (preferences, facts, episodes) are returned. Each flag adds one more parallel namespace query.
+
+Use `--no-episodes` to exclude episodic memories (useful in hooks where episodes add noise):
+
+```bash
+mnemo recall --project mnemo --format hook --no-episodes
+```
+
+Output format is controlled by `--format`:
+- `visible` — human-readable markdown
+- `hook` — Claude Code JSON structure for hook injection (sets `visible: false` internally)
 
 ### How it looks in practice
 
 Once hooks are configured, mnemo works automatically:
 
 1. Start a Claude Code session in a git repo
-2. The session-start hook fires, detects the project from the git folder name, and runs `mnemo recall`
-3. Recalled memories appear in the conversation (if `visible: true`)
+2. The session-start hook fires, detects the project from the git folder name, and runs `mnemo recall --project <name> --task coding --date <today> --format hook --no-episodes`
+3. Recalled memories are injected as hidden context into the conversation
 4. As you work, every 5th prompt triggers a background push of recent turns
 5. AgentCore extracts preferences, facts, and episodes from the conversation
-6. If the conversation has project metadata, the project extractor writes project-specific memories
+6. The context extractor classifies the task domain, extracts project-specific facts, and writes a daily summary
+
+Both hooks include a `command -v mnemo` guard — if the CLI isn't installed on a machine, the hooks silently exit without errors.
 
 Next time you start a session — on any machine with mnemo configured — those memories are recalled automatically.
 
 ### Viewing raw API responses
 
 ```bash
-# All memories for a project
-curl -s -H "x-api-key: <key>" "https://<api-url>/v1/recall?project=mnemo" | jq
+# Full recall with all dimensions
+curl -s -H "x-api-key: <key>" \
+  "https://<api-url>/v1/recall?project=mnemo&task=coding&date=2026-04-13" | jq
 
-# Global memories only (no project)
+# Global memories only (no project/task/daily)
 curl -s -H "x-api-key: <key>" "https://<api-url>/v1/recall" | jq
 ```
