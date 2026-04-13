@@ -1,0 +1,191 @@
+import {
+  BedrockAgentCoreClient,
+  BatchCreateMemoryRecordsCommand,
+} from '@aws-sdk/client-bedrock-agentcore';
+import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import type { SNSEvent } from 'aws-lambda';
+
+const agentcore = new BedrockAgentCoreClient({});
+const bedrock = new BedrockRuntimeClient({});
+const s3 = new S3Client({});
+
+const EXTRACTION_PROMPT = `You are analyzing a conversation between a user and an AI assistant.
+
+Perform three analyses:
+
+1. IDENTIFY THE PROJECT: Look for repository names, package names, or project references. If none found, output "unknown".
+
+2. CLASSIFY THE TASK DOMAIN: Categorize the conversation into exactly one of these domains based on the primary topic:
+   - coding (software development, debugging, architecture)
+   - studying (learning, research, education)
+   - meeting (discussion summaries, decisions, action items)
+   - finance (budgeting, investments, expenses)
+   - career (job planning, mentorship, professional growth)
+   - writing (documentation, content creation, communication)
+   - planning (project planning, scheduling, organization)
+   - general (anything that doesn't fit above)
+   If the conversation is too short or vague to classify, output "unknown".
+
+3. EXTRACT INSIGHTS: Pull out domain-specific facts, decisions, and context.
+
+4. WRITE A DAILY SUMMARY: A 1-3 sentence summary of what happened in this conversation, suitable for a daily activity log.
+
+Respond in this exact format:
+PROJECT: <project_name>
+TASK: <task_domain>
+FACTS:
+<one fact per line, or NONE if nothing meaningful>
+DAILY:
+<1-3 sentence summary, or NONE if nothing meaningful>`;
+
+function parseS3Uri(uri: string): { bucket: string; key: string } {
+  const withoutProtocol = uri.replace('s3://', '');
+  const slashIndex = withoutProtocol.indexOf('/');
+  return {
+    bucket: withoutProtocol.slice(0, slashIndex),
+    key: withoutProtocol.slice(slashIndex + 1),
+  };
+}
+
+function sanitizeName(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_');
+}
+
+function deriveDate(payload: any): string {
+  const ts = payload.startingTimestamp || payload.endingTimestamp || Date.now();
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+interface ExtractionResult {
+  projectName: string;
+  taskDomain: string;
+  facts: string;
+  daily: string;
+}
+
+function parseExtraction(text: string): ExtractionResult | undefined {
+  const projectMatch = text.match(/^PROJECT:\s*(.+)$/m);
+  const taskMatch = text.match(/^TASK:\s*(.+)$/m);
+  const factsMatch = text.match(/^FACTS:\s*\n?([\s\S]*?)(?=^DAILY:)/m);
+  const dailyMatch = text.match(/^DAILY:\s*\n?([\s\S]*)$/m);
+
+  if (!projectMatch || !taskMatch) return undefined;
+
+  return {
+    projectName: sanitizeName(projectMatch[1]),
+    taskDomain: sanitizeName(taskMatch[1]),
+    facts: factsMatch ? factsMatch[1].trim() : '',
+    daily: dailyMatch ? dailyMatch[1].trim() : '',
+  };
+}
+
+function extractConversationText(payload: any): string {
+  const lines: string[] = [];
+  for (const entry of payload.currentContext || []) {
+    const role = entry.role || 'UNKNOWN';
+    const text = entry.content?.text || '';
+    lines.push(`${role}: ${text}`);
+  }
+  return lines.join('\n');
+}
+
+async function writeMemoryRecord(
+  memoryId: string,
+  namespace: string,
+  content: string
+): Promise<void> {
+  await agentcore.send(
+    new BatchCreateMemoryRecordsCommand({
+      memoryId,
+      records: [
+        {
+          requestIdentifier: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          namespaces: [namespace],
+          content: { text: content },
+          timestamp: new Date(),
+        },
+      ],
+    })
+  );
+}
+
+export async function handler(event: SNSEvent): Promise<void> {
+  const message = JSON.parse(event.Records[0].Sns.Message);
+
+  const { bucket, key } = parseS3Uri(message.s3PayloadLocation);
+  const s3Response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  const payload = JSON.parse(await s3Response.Body!.transformToString());
+
+  const conversationText = extractConversationText(payload);
+  if (!conversationText) return;
+
+  const result = await callLlm(conversationText);
+  if (!result) {
+    console.warn(`Failed to parse LLM extraction for session ${payload.sessionId}`);
+    return;
+  }
+
+  const { projectName, taskDomain, facts, daily } = result;
+  const actorId = payload.actorId || process.env.ACTOR_ID!;
+  const memoryId = payload.memoryId || process.env.MEMORY_ID!;
+  const date = deriveDate(payload);
+
+  const isNone = (s: string) => !s || s === 'NONE';
+  const hasProject = projectName !== 'unknown' && !isNone(facts);
+  const hasTask = taskDomain !== 'unknown' && !isNone(facts);
+  const hasDaily = !isNone(daily);
+
+  if (!hasProject && !hasTask && !hasDaily) return;
+
+  const writes: Promise<void>[] = [];
+
+  if (hasProject) {
+    writes.push(
+      writeMemoryRecord(memoryId, `/projects/${actorId}/${projectName}/`, facts)
+    );
+  }
+
+  if (hasTask) {
+    writes.push(
+      writeMemoryRecord(memoryId, `/tasks/${actorId}/${taskDomain}/`, facts)
+    );
+  }
+
+  if (hasDaily) {
+    writes.push(
+      writeMemoryRecord(memoryId, `/daily/${actorId}/${date}/`, daily)
+    );
+  }
+
+  await Promise.all(writes);
+
+  const parts = [
+    hasProject ? `project="${projectName}"` : null,
+    hasTask ? `task="${taskDomain}"` : null,
+    hasDaily ? `daily="${date}"` : null,
+  ].filter(Boolean).join(', ');
+  console.log(`Extracted context (${parts}) from session ${payload.sessionId}`);
+}
+
+async function callLlm(conversation: string): Promise<ExtractionResult | undefined> {
+  const response = await bedrock.send(
+    new InvokeModelCommand({
+      modelId: process.env.MODEL_ID || 'anthropic.claude-3-haiku-20240307-v1:0',
+      body: JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: `${EXTRACTION_PROMPT}\n\nConversation:\n${conversation}`,
+          },
+        ],
+      }),
+    })
+  );
+
+  const body = JSON.parse(new TextDecoder().decode(response.body));
+  const text = body.content?.[0]?.text || '';
+  return parseExtraction(text);
+}
