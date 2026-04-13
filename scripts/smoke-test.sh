@@ -45,6 +45,7 @@ push_event() {
     --arg ws "$WORKSTATION" \
     --arg wd "$WORKDIR" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg src "smoke-test" \
     --argjson turns "$turns" \
     '{
       sessionId: $sid,
@@ -53,7 +54,8 @@ push_event() {
         project: $project,
         workstation: $ws,
         workdir: $wd,
-        timestamp: $ts
+        timestamp: $ts,
+        source: $src
       }
     }')
 
@@ -75,21 +77,27 @@ push_event() {
 do_recall() {
   local label="$1"
   echo -e "\n${CYAN}--- Recall: $label ---${NC}"
+  local today
+  today=$(date -u +%Y-%m-%d)
   local response
   response=$(curl -s \
     -H "x-api-key: $API_KEY" \
-    "$API_URL/recall?project=$PROJECT&workstation=$WORKSTATION")
+    "$API_URL/recall?project=$PROJECT&workstation=$WORKSTATION&task=coding&date=$today")
 
-  local pref_count fact_count ep_count proj_count
+  local pref_count fact_count ep_count proj_count task_count daily_count
   pref_count=$(echo "$response" | jq '.preferences | length')
   fact_count=$(echo "$response" | jq '.facts | length')
   ep_count=$(echo "$response" | jq '.episodes | length')
   proj_count=$(echo "$response" | jq '.project.memories // [] | length')
+  task_count=$(echo "$response" | jq '.tasks.memories // [] | length')
+  daily_count=$(echo "$response" | jq '.daily.memories // [] | length')
 
   echo -e "  Preferences: ${GREEN}$pref_count${NC}"
   echo -e "  Facts:       ${GREEN}$fact_count${NC}"
   echo -e "  Episodes:    ${GREEN}$ep_count${NC}"
   echo -e "  Project:     ${GREEN}$proj_count${NC}"
+  echo -e "  Tasks:       ${GREEN}$task_count${NC}"
+  echo -e "  Daily:       ${GREEN}$daily_count${NC}"
 
   if [[ "$pref_count" -gt 0 ]]; then
     echo -e "\n  ${YELLOW}Sample preferences:${NC}"
@@ -135,7 +143,7 @@ tail_logs() {
     --query 'logGroups[0].logGroupName' --output text 2>/dev/null)
 
   EXTRACTOR_LOG=$(aws logs describe-log-groups \
-    --log-group-name-prefix "/aws/lambda/MnemoStack-LambdasProjectExtractorFn" \
+    --log-group-name-prefix "/aws/lambda/MnemoStack-LambdasContextExtractorFn" \
     --query 'logGroups[0].logGroupName' --output text 2>/dev/null)
 
   MEMORY_LOG="/aws/vendedlogs/bedrock-agentcore/memory/mnemo_memory/APPLICATION_LOGS"
