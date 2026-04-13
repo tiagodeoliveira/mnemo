@@ -24,12 +24,30 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
       return { statusCode: 400, body: JSON.stringify({ error: 'sessionId is required' }) };
     }
 
-    const payload = body.turns.map((turn) => ({
+    // Build metadata context line to embed in conversation
+    // AgentCore S3 payload only includes conversation turns, not event metadata,
+    // so we prepend a context turn that the extractor can parse deterministically.
+    const ctxParts: string[] = [];
+    if (body.context.project) ctxParts.push(`project=${body.context.project}`);
+    ctxParts.push(`source=${body.context.source || 'unknown'}`);
+    ctxParts.push(`workstation=${body.context.workstation}`);
+    ctxParts.push(`date=${body.context.timestamp.slice(0, 10)}`);
+
+    const contextTurn = {
+      conversational: {
+        content: { text: `[mnemo-context: ${ctxParts.join(', ')}]` },
+        role: 'OTHER',
+      },
+    };
+
+    const conversationTurns = body.turns.map((turn) => ({
       conversational: {
         content: { text: turn.content },
         role: ROLE_MAP[turn.role] || 'OTHER',
       },
     }));
+
+    const payload = [contextTurn, ...conversationTurns] as any[];
 
     const metadata: Record<string, { stringValue: string }> = {
       workstation: { stringValue: body.context.workstation },

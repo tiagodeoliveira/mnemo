@@ -63,8 +63,11 @@ describe('ingest lambda', () => {
     expect(command.input.memoryId).toBe('mem-123');
     expect(command.input.actorId).toBe('tiago');
     expect(command.input.sessionId).toBe('session-1');
-    expect(command.input.payload).toHaveLength(2);
-    expect(command.input.payload[0].conversational.role).toBe('USER');
+    expect(command.input.payload).toHaveLength(3); // context turn + 2 conversation turns
+    expect(command.input.payload[0].conversational.role).toBe('OTHER');
+    expect(command.input.payload[0].conversational.content.text).toContain('[mnemo-context:');
+    expect(command.input.payload[0].conversational.content.text).toContain('project=mnemo');
+    expect(command.input.payload[1].conversational.role).toBe('USER');
     expect(command.input.metadata.project.stringValue).toBe('mnemo');
   });
 

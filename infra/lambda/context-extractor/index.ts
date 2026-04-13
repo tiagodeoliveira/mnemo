@@ -15,30 +15,35 @@ const DEFAULT_TASK_DOMAINS = 'coding,studying,meeting,general';
 function getTaskDomains(): string[] {
   const raw = process.env.TASK_DOMAINS || DEFAULT_TASK_DOMAINS;
   const domains = raw.split(',').map((d) => d.trim().toLowerCase()).filter(Boolean);
-  // Ensure 'general' is always present as the fallback
   if (!domains.includes('general')) domains.push('general');
   return domains;
 }
 
-function buildExtractionPrompt(domains: string[]): string {
+function buildExtractionPrompt(domains: string[], metadata: Metadata): string {
   const domainList = domains.map((d) => `   - ${d}`).join('\n');
+  const metaLines: string[] = [];
+  if (metadata.project) metaLines.push(`- Project: ${metadata.project}`);
+  if (metadata.source) metaLines.push(`- Source: ${metadata.source}`);
+  if (metadata.date) metaLines.push(`- Date: ${metadata.date}`);
+
+  const metaSection = metaLines.length > 0
+    ? `\nKnown context:\n${metaLines.join('\n')}\n`
+    : '';
+
   return `You are analyzing a conversation between a user and an AI assistant.
+${metaSection}
+Perform two analyses:
 
-Perform three analyses:
-
-1. IDENTIFY THE PROJECT: Look for repository names, package names, or project references. If none found, output "unknown".
-
-2. CLASSIFY THE TASK DOMAIN: Categorize the conversation into exactly one of these domains based on the primary topic:
+1. CLASSIFY THE TASK DOMAIN: Categorize the conversation into exactly one of these domains based on the primary topic:
 ${domainList}
    You MUST pick exactly one domain from the list above. If the conversation doesn't clearly fit any specific domain, use "general".
    If the conversation is too short or vague to classify, output "unknown".
 
-3. EXTRACT INSIGHTS: Pull out domain-specific facts, decisions, and context.
+2. EXTRACT INSIGHTS: Pull out domain-specific facts, decisions, and context worth remembering.
 
-4. WRITE A DAILY SUMMARY: A 1-3 sentence summary of what happened in this conversation, suitable for a daily activity log.
+3. WRITE A DAILY SUMMARY: A 1-3 sentence summary of what happened in this conversation, suitable for a daily activity log.
 
 Respond in this exact format:
-PROJECT: <project_name>
 TASK: <task_domain>
 FACTS:
 <one fact per line, or NONE if nothing meaningful>
@@ -59,25 +64,62 @@ function sanitizeName(name: string): string {
   return name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_');
 }
 
-function deriveDate(payload: any): string {
-  const ts = payload.startingTimestamp || payload.endingTimestamp || Date.now();
-  return new Date(ts).toISOString().slice(0, 10);
+interface Metadata {
+  project?: string;
+  source?: string;
+  workstation?: string;
+  date?: string;
 }
 
 interface ExtractionResult {
-  projectName: string;
   taskDomain: string;
   facts: string;
   daily: string;
 }
 
+/**
+ * Parse [mnemo-context: key=value, ...] from conversation turns.
+ * The ingest Lambda prepends this as an OTHER role turn.
+ */
+function parseMetadata(payload: any): Metadata {
+  const meta: Metadata = {};
+  for (const entry of payload.currentContext || []) {
+    const text = entry.content?.text || '';
+    const match = text.match(/^\[mnemo-context:\s*(.+)\]$/);
+    if (match) {
+      for (const pair of match[1].split(',')) {
+        const [k, ...vParts] = pair.split('=');
+        const key = k.trim();
+        const value = vParts.join('=').trim();
+        if (key === 'project' && value) meta.project = value;
+        if (key === 'source' && value) meta.source = value;
+        if (key === 'workstation' && value) meta.workstation = value;
+        if (key === 'date' && value) meta.date = value;
+      }
+      break; // Only one context turn expected
+    }
+  }
+  return meta;
+}
+
+function extractConversationText(payload: any): string {
+  const lines: string[] = [];
+  for (const entry of payload.currentContext || []) {
+    const role = entry.role || 'UNKNOWN';
+    const text = entry.content?.text || '';
+    // Skip the metadata context turn — it's for programmatic use
+    if (text.startsWith('[mnemo-context:')) continue;
+    lines.push(`${role}: ${text}`);
+  }
+  return lines.join('\n');
+}
+
 function parseExtraction(text: string, allowedDomains: string[]): ExtractionResult | undefined {
-  const projectMatch = text.match(/^PROJECT:\s*(.+)$/m);
   const taskMatch = text.match(/^TASK:\s*(.+)$/m);
   const factsMatch = text.match(/^FACTS:\s*\n?([\s\S]*?)(?=^DAILY:)/m);
   const dailyMatch = text.match(/^DAILY:\s*\n?([\s\S]*)$/m);
 
-  if (!projectMatch || !taskMatch) return undefined;
+  if (!taskMatch) return undefined;
 
   let taskDomain = sanitizeName(taskMatch[1]);
   if (taskDomain !== 'unknown' && !allowedDomains.includes(taskDomain)) {
@@ -86,21 +128,10 @@ function parseExtraction(text: string, allowedDomains: string[]): ExtractionResu
   }
 
   return {
-    projectName: sanitizeName(projectMatch[1]),
     taskDomain,
     facts: factsMatch ? factsMatch[1].trim() : '',
     daily: dailyMatch ? dailyMatch[1].trim() : '',
   };
-}
-
-function extractConversationText(payload: any): string {
-  const lines: string[] = [];
-  for (const entry of payload.currentContext || []) {
-    const role = entry.role || 'UNKNOWN';
-    const text = entry.content?.text || '';
-    lines.push(`${role}: ${text}`);
-  }
-  return lines.join('\n');
 }
 
 async function writeMemoryRecord(
@@ -130,23 +161,30 @@ export async function handler(event: SNSEvent): Promise<void> {
   const s3Response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
   const payload = JSON.parse(await s3Response.Body!.transformToString());
 
+  // Parse deterministic metadata from embedded context turn
+  const metadata = parseMetadata(payload);
+
   const conversationText = extractConversationText(payload);
   if (!conversationText) return;
 
   const allowedDomains = getTaskDomains();
-  const result = await callLlm(conversationText, allowedDomains);
+  const result = await callLlm(conversationText, allowedDomains, metadata);
   if (!result) {
     console.warn(`Failed to parse LLM extraction for session ${payload.sessionId}`);
     return;
   }
 
-  const { projectName, taskDomain, facts, daily } = result;
+  const { taskDomain, facts, daily } = result;
   const actorId = payload.actorId || process.env.ACTOR_ID!;
   const memoryId = payload.memoryId || process.env.MEMORY_ID!;
-  const date = deriveDate(payload);
+
+  // Use metadata date if available, otherwise derive from payload timestamps
+  const date = metadata.date || deriveDate(payload);
+  // Use metadata project deterministically (sanitized)
+  const projectName = metadata.project ? sanitizeName(metadata.project) : undefined;
 
   const isNone = (s: string) => !s || s === 'NONE';
-  const hasProject = projectName !== 'unknown' && !isNone(facts);
+  const hasProject = !!projectName && !isNone(facts);
   const hasTask = taskDomain !== 'unknown' && !isNone(facts);
   const hasDaily = !isNone(daily);
 
@@ -178,12 +216,18 @@ export async function handler(event: SNSEvent): Promise<void> {
     hasProject ? `project="${projectName}"` : null,
     hasTask ? `task="${taskDomain}"` : null,
     hasDaily ? `daily="${date}"` : null,
+    metadata.source ? `source="${metadata.source}"` : null,
   ].filter(Boolean).join(', ');
   console.log(`Extracted context (${parts}) from session ${payload.sessionId}`);
 }
 
-async function callLlm(conversation: string, allowedDomains: string[]): Promise<ExtractionResult | undefined> {
-  const prompt = buildExtractionPrompt(allowedDomains);
+function deriveDate(payload: any): string {
+  const ts = payload.startingTimestamp || payload.endingTimestamp || Date.now();
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+async function callLlm(conversation: string, allowedDomains: string[], metadata: Metadata): Promise<ExtractionResult | undefined> {
+  const prompt = buildExtractionPrompt(allowedDomains, metadata);
   const response = await bedrock.send(
     new InvokeModelCommand({
       modelId: process.env.MODEL_ID || 'us.anthropic.claude-sonnet-4-6',

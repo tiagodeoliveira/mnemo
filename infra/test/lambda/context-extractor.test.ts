@@ -53,23 +53,20 @@ function makeSnsEvent(message: object): SNSEvent {
   };
 }
 
-const LLM_RESPONSE_FULL = `PROJECT: mnemo
-TASK: coding
+const LLM_RESPONSE_FULL = `TASK: coding
 FACTS:
 Chose CDK over SAM for infrastructure
 Using CfnMemory for AgentCore lifecycle
 DAILY:
 Worked on mnemo infrastructure, chose CDK over SAM, set up AgentCore Memory with CfnMemory construct`;
 
-const LLM_RESPONSE_NO_PROJECT = `PROJECT: unknown
-TASK: studying
+const LLM_RESPONSE_NO_PROJECT = `TASK: studying
 FACTS:
 Learning about distributed systems consensus protocols
 DAILY:
 Studied Raft consensus algorithm and compared with Paxos`;
 
-const LLM_RESPONSE_NONE = `PROJECT: unknown
-TASK: unknown
+const LLM_RESPONSE_NONE = `TASK: unknown
 FACTS: NONE
 DAILY: NONE`;
 
@@ -117,8 +114,9 @@ describe('context-extractor lambda', () => {
     });
   });
 
-  it('extracts project, task, and daily memories from conversation', async () => {
+  it('extracts project (from metadata), task, and daily memories', async () => {
     const payload = makeS3Payload('session-1', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=claude-code, workstation=mac, date=2026-04-13]' } },
       { role: 'USER', content: { text: 'Working on mnemo, chose CDK over SAM' }, eventId: 'e1' },
       { role: 'ASSISTANT', content: { text: 'CDK is the right choice for this' }, eventId: 'e1' },
     ]);
@@ -141,8 +139,9 @@ describe('context-extractor lambda', () => {
     expect(namespaces).toContain('/daily/tiago/2026-04-13/');
   });
 
-  it('skips project write when project is unknown', async () => {
+  it('skips project write when no project in metadata', async () => {
     const payload = makeS3Payload('session-2', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=claude-code, workstation=mac, date=2026-04-13]' } },
       { role: 'USER', content: { text: 'Explain the Raft consensus algorithm' }, eventId: 'e1' },
     ]);
 
@@ -166,6 +165,7 @@ describe('context-extractor lambda', () => {
 
   it('skips all writes when facts and daily are NONE', async () => {
     const payload = makeS3Payload('session-3', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=test, workstation=mac, date=2026-04-13]' } },
       { role: 'USER', content: { text: 'hello' }, eventId: 'e1' },
     ]);
 
@@ -194,6 +194,7 @@ describe('context-extractor lambda', () => {
 
   it('parses S3 URI correctly', async () => {
     const payload = makeS3Payload('session-5', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-13]' } },
       { role: 'USER', content: { text: 'Working on mnemo CDK stack' }, eventId: 'e1' },
     ]);
 
@@ -211,11 +212,11 @@ describe('context-extractor lambda', () => {
 
   it('falls back to general when LLM returns unlisted task domain', async () => {
     const payload = makeS3Payload('session-fallback', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=test, workstation=mac, date=2026-04-13]' } },
       { role: 'USER', content: { text: 'Planning a trip to Japan' }, eventId: 'e1' },
     ]);
 
-    const llmResponse = `PROJECT: unknown
-TASK: planning
+    const llmResponse = `TASK: planning
 FACTS:
 Planning a trip to Japan in November
 DAILY:
@@ -234,16 +235,36 @@ Discussed travel plans for Japan`;
     const calls = mockAgentCoreSend.mock.calls.map((c: any) => c[0].input);
     const namespaces = calls.map((c: any) => c.records[0].namespaces[0]);
 
-    // "planning" is not in allowed list, should fall back to "general"
     expect(namespaces).toContain('/tasks/tiago/general/');
     expect(namespaces).not.toEqual(expect.arrayContaining([expect.stringContaining('/planning/')]));
   });
 
-  it('derives date from payload timestamps', async () => {
+  it('uses metadata date over payload timestamp', async () => {
     const payload = makeS3Payload('session-6', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-15]' } },
       { role: 'USER', content: { text: 'Working on mnemo' }, eventId: 'e1' },
     ]);
-    payload.startingTimestamp = 1776081600000; // 2026-04-13T12:00:00Z
+    // Payload timestamp is 2026-04-13, but metadata date is 2026-04-15
+    payload.startingTimestamp = 1776081600000;
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(LLM_RESPONSE_FULL));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const calls = mockAgentCoreSend.mock.calls.map((c: any) => c[0].input);
+    const dailyCall = calls.find((c: any) => c.records[0].namespaces[0].includes('/daily/'));
+    // Should use metadata date (2026-04-15), not payload timestamp (2026-04-13)
+    expect(dailyCall.records[0].namespaces[0]).toBe('/daily/tiago/2026-04-15/');
+  });
+
+  it('falls back to payload timestamp when no metadata date', async () => {
+    const payload = makeS3Payload('session-7', [
+      { role: 'USER', content: { text: 'Working on something' }, eventId: 'e1' },
+    ]);
+    payload.startingTimestamp = 1776081600000; // 2026-04-13
 
     mockS3Send.mockResolvedValue({
       Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
@@ -255,5 +276,29 @@ Discussed travel plans for Japan`;
     const calls = mockAgentCoreSend.mock.calls.map((c: any) => c[0].input);
     const dailyCall = calls.find((c: any) => c.records[0].namespaces[0].includes('/daily/'));
     expect(dailyCall.records[0].namespaces[0]).toBe('/daily/tiago/2026-04-13/');
+  });
+
+  it('excludes mnemo-context line from conversation text sent to LLM', async () => {
+    const payload = makeS3Payload('session-8', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-13]' } },
+      { role: 'USER', content: { text: 'Hello' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(LLM_RESPONSE_FULL));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // Verify LLM was called and conversation doesn't contain mnemo-context
+    const llmCall = mockBedrockSend.mock.calls[0][0];
+    const llmBody = JSON.parse(llmCall.input.body);
+    const llmContent = llmBody.messages[0].content;
+
+    expect(llmContent).not.toContain('[mnemo-context:');
+    expect(llmContent).toContain('USER: Hello');
+    // But the prompt should include known context from metadata
+    expect(llmContent).toContain('Project: mnemo');
   });
 });
