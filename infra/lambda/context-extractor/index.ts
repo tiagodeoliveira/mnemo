@@ -34,6 +34,7 @@ function getTaskDomains(): string[] {
   return domains;
 }
 
+const AGENTCORE_RECORD_LIMIT = 16_000;
 const MAX_META_LENGTH = 128;
 
 function sanitizeMetaValue(value: string): string {
@@ -187,6 +188,12 @@ function parseExtraction(text: string, allowedDomains: string[]): ExtractionResu
   };
 }
 
+function truncateToLimit(content: string): string {
+  if (content.length <= AGENTCORE_RECORD_LIMIT) return content;
+  console.warn(`Record content (${content.length} chars) exceeds ${AGENTCORE_RECORD_LIMIT} limit, truncating`);
+  return content.slice(0, AGENTCORE_RECORD_LIMIT - 4) + '\n...';
+}
+
 async function writeMemoryRecord(
   memoryId: string,
   namespace: string,
@@ -199,7 +206,7 @@ async function writeMemoryRecord(
         {
           requestIdentifier: `ctx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           namespaces: [namespace],
-          content: { text: content },
+          content: { text: truncateToLimit(content) },
           timestamp: new Date(),
         },
       ],
@@ -278,6 +285,7 @@ Rules:
 - When facts conflict, keep the most recent version
 - Write concisely — a good record reads like a design doc, not a changelog
 - Drop anything that won't be useful in a future session
+- HARD LIMIT: output must be under ${AGENTCORE_RECORD_LIMIT} characters. Prioritize the most important facts and cut aggressively if needed
 
 EXISTING RECORDS:
 ${existingText}

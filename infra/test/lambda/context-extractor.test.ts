@@ -580,6 +580,28 @@ Discussed travel plans for Japan`;
     vi.restoreAllMocks();
   });
 
+  it('truncates record content that exceeds AgentCore 16K limit', async () => {
+    const payload = makeS3Payload('session-large', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=test, workstation=mac, date=2026-04-13]' } },
+      { role: 'USER', content: { text: 'Working on something' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    const oversizedFacts = 'x'.repeat(20_000);
+    const llmResponse = `TASK: coding\nFACTS:\n${oversizedFacts}\nDAILY:\nWorked on stuff`;
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(llmResponse));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    for (const create of creates) {
+      expect(create.records[0].content.text.length).toBeLessThanOrEqual(16_000);
+    }
+  });
+
   it('uses env vars for actorId and memoryId, ignoring payload values', async () => {
     const payload = makeS3Payload('session-env', [
       { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-16]' } },

@@ -384,3 +384,30 @@ Set `NOTIFICATION_EMAIL` in `infra/.env` to receive alarm notifications via emai
 
 All alarm thresholds are configurable via the `ObservabilityConstruct` props (`alarmThresholds`), with the values above as defaults. Resource names (dashboard, alarms, SNS topic) are prefixed with the stack name, so multiple stacks can coexist in the same account.
 
+## Cost
+
+The entire stack runs on serverless infrastructure, so cost scales with usage. Here is a real-world baseline from 3 days of personal use (Apr 13-15, 2026) across Claude Code, Codex, and OpenClaw:
+
+**Usage over 3 days:**
+
+| Metric | Total | Daily avg |
+|---|---|---|
+| Events ingested | 268 | ~89 |
+| Conversation turns ingested | 5,274 | ~1,758 |
+| Memory retrievals (recall) | 270 | ~90 |
+| Context extractor invocations | 803 | ~268 |
+| Daily digests generated | 6 | ~2 |
+
+**Cost over 3 days:**
+
+| Service | 3-day cost | Daily avg | What it covers |
+|---|---|---|---|
+| Bedrock AgentCore | $1.63 | ~$0.54 | Memory storage, retrieval, event processing, runtime |
+| S3 | $0.08 | ~$0.03 | Event payload storage |
+| Lambda | $0.04 | ~$0.01 | Ingest, recall, context extractor, digest functions |
+| API Gateway | < $0.01 | < $0.01 | REST API requests |
+| SNS / SQS | < $0.01 | < $0.01 | Event notifications, dead-letter queues |
+| **Total** | **~$1.75** | **~$0.58** | |
+
+AgentCore is the dominant cost, driven primarily by memory retrievals ($0.50/1000 retrievals) and runtime compute for the built-in extraction strategies. Everything else is effectively free-tier for personal use. Bedrock InvokeModel costs (Claude Sonnet for context extraction and digest generation) are minimal and included in the Lambda line.
+
