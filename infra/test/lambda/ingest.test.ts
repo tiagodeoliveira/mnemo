@@ -226,6 +226,105 @@ describe('ingest lambda', () => {
     expect(JSON.parse(result.body).error).toBe('Internal server error');
   });
 
+  it('passes arbitrary attributes through as attr.* metadata and in mnemo-context turn', async () => {
+    const result = await handler(
+      makeEvent({
+        sessionId: 'session-attrs',
+        turns: [{ role: 'user', content: 'hello' }],
+        context: {
+          workstation: 'laptop',
+          workdir: '/home/user',
+          timestamp: '2026-04-13T14:30:00Z',
+          attributes: { owner: 'tiago', priority: 'high', 'team.name': 'platform' },
+        },
+      })
+    );
+
+    expect(result.statusCode).toBe(200);
+    const command = mockSend.mock.calls[0][0];
+    expect(command.input.metadata['attr.owner'].stringValue).toBe('tiago');
+    expect(command.input.metadata['attr.priority'].stringValue).toBe('high');
+    expect(command.input.metadata['attr.team.name'].stringValue).toBe('platform');
+
+    const contextTurn = command.input.payload[0].conversational.content.text;
+    expect(contextTurn).toContain('[mnemo-context:');
+    const match = contextTurn.match(/\[mnemo-context:\s*(.+)\]$/);
+    const parsed = JSON.parse(match[1]);
+    expect(parsed.attributes).toEqual({ owner: 'tiago', priority: 'high', 'team.name': 'platform' });
+  });
+
+  it('rejects attributes when not an object', async () => {
+    const result = await handler(
+      makeEvent({
+        sessionId: 's',
+        turns: [{ role: 'user', content: 'hi' }],
+        context: {
+          workstation: 'w',
+          workdir: '/w',
+          timestamp: '2026-04-10T14:00:00Z',
+          attributes: ['not', 'an', 'object'],
+        },
+      })
+    );
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error).toContain('attributes');
+  });
+
+  it('rejects attribute keys with invalid characters', async () => {
+    const result = await handler(
+      makeEvent({
+        sessionId: 's',
+        turns: [{ role: 'user', content: 'hi' }],
+        context: {
+          workstation: 'w',
+          workdir: '/w',
+          timestamp: '2026-04-10T14:00:00Z',
+          attributes: { 'bad key!': 'value' },
+        },
+      })
+    );
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error).toContain('bad key!');
+  });
+
+  it('rejects more than 32 attributes', async () => {
+    const attrs: Record<string, string> = {};
+    for (let i = 0; i < 33; i++) attrs[`k${i}`] = 'v';
+    const result = await handler(
+      makeEvent({
+        sessionId: 's',
+        turns: [{ role: 'user', content: 'hi' }],
+        context: {
+          workstation: 'w',
+          workdir: '/w',
+          timestamp: '2026-04-10T14:00:00Z',
+          attributes: attrs,
+        },
+      })
+    );
+    expect(result.statusCode).toBe(400);
+    expect(JSON.parse(result.body).error).toContain('maximum of 32');
+  });
+
+  it('omits attributes from mnemo-context turn when not provided', async () => {
+    await handler(
+      makeEvent({
+        sessionId: 's',
+        turns: [{ role: 'user', content: 'hi' }],
+        context: {
+          workstation: 'w',
+          workdir: '/w',
+          timestamp: '2026-04-10T14:00:00Z',
+        },
+      })
+    );
+    const command = mockSend.mock.calls[0][0];
+    const contextTurn = command.input.payload[0].conversational.content.text;
+    const match = contextTurn.match(/\[mnemo-context:\s*(.+)\]$/);
+    const parsed = JSON.parse(match[1]);
+    expect(parsed.attributes).toBeUndefined();
+  });
+
   it('derives date from timestamp and includes in metadata', async () => {
     const result = await handler(
       makeEvent({

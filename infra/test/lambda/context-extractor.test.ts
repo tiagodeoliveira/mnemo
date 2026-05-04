@@ -387,6 +387,33 @@ Discussed travel plans for Japan`;
     expect(llmContent).toContain('Project: mnemo');
   });
 
+  it('parses attributes from mnemo-context JSON metadata', async () => {
+    const meta = {
+      project: 'mnemo',
+      source: 'claude-code',
+      workstation: 'mac',
+      date: '2026-04-16',
+      attributes: { owner: 'tiago', priority: 'high' },
+    };
+    const payload = makeS3Payload('session-attrs', [
+      { role: 'OTHER', content: { text: `[mnemo-context: ${JSON.stringify(meta)}]` } },
+      { role: 'USER', content: { text: 'Working on stuff' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(LLM_RESPONSE_FULL));
+
+    await expect(
+      handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')))
+    ).resolves.toBeUndefined();
+
+    const creates = getBatchCreateCalls();
+    const namespaces = creates.map((c) => c.records[0].namespaces[0]);
+    expect(namespaces).toContain('/projects/tiago/mnemo/');
+  });
+
   it('consolidates with existing records when present', async () => {
     const existingRecords = [
       { memoryRecordId: 'old-1', content: { text: 'CDK was chosen over SAM' }, score: 0.9 },

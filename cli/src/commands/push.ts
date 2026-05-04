@@ -9,6 +9,7 @@ export interface PushOptions {
   workstation: string;
   workdir: string;
   source?: string;
+  attributes?: Record<string, string>;
 }
 
 export async function executePush(options: PushOptions): Promise<void> {
@@ -21,6 +22,9 @@ export async function executePush(options: PushOptions): Promise<void> {
   };
   if (options.project) context.project = options.project;
   context.source = options.source || 'unknown';
+  if (options.attributes && Object.keys(options.attributes).length > 0) {
+    context.attributes = options.attributes;
+  }
 
   const response = await fetch(`${options.apiUrl}/events`, {
     method: 'POST',

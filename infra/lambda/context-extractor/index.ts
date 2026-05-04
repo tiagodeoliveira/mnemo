@@ -84,6 +84,7 @@ interface Metadata {
   source?: string;
   workstation?: string;
   date?: string;
+  attributes?: Record<string, string>;
 }
 
 interface ExtractionResult {
@@ -124,6 +125,13 @@ function parseJsonMetadata(body: string): Metadata {
     if (typeof obj.source === 'string') out.source = obj.source;
     if (typeof obj.workstation === 'string') out.workstation = obj.workstation;
     if (typeof obj.date === 'string') out.date = obj.date;
+    if (obj.attributes && typeof obj.attributes === 'object' && !Array.isArray(obj.attributes)) {
+      const attrs: Record<string, string> = {};
+      for (const [k, v] of Object.entries(obj.attributes as Record<string, unknown>)) {
+        if (typeof v === 'string') attrs[k] = v;
+      }
+      if (Object.keys(attrs).length > 0) out.attributes = attrs;
+    }
     return out;
   } catch {
     return {};

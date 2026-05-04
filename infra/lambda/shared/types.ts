@@ -10,6 +10,7 @@ export interface EventContext {
   timestamp: string;
   date?: string;
   source?: string;
+  attributes?: Record<string, string>;
 }
 
 export interface IngestRequest {

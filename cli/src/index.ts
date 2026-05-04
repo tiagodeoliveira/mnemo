@@ -9,6 +9,15 @@ import { hookPromptSubmitFromStdin } from './commands/hook-prompt-submit';
 import { hookSessionStartFromStdin } from './commands/hook-session-start';
 import { localDate } from './date';
 
+function collectAttr(value: string, previous: Record<string, string>): Record<string, string> {
+  const idx = value.indexOf('=');
+  if (idx === -1) throw new Error(`--attr expects key=value, got "${value}"`);
+  const key = value.slice(0, idx);
+  const val = value.slice(idx + 1);
+  if (!key) throw new Error(`--attr key is empty in "${value}"`);
+  return { ...previous, [key]: val };
+}
+
 const program = new Command();
 
 program
@@ -24,6 +33,7 @@ program
   .option('--project <name>', 'Project name (auto-detected from git)')
   .option('--source <name>', 'Source identifier (e.g., claude-code, meeting-tool)')
   .option('--workdir <path>', 'Working directory', process.cwd())
+  .option('--attr <key=value...>', 'Arbitrary key=value attribute (repeatable)', collectAttr, {})
   .action(async (opts) => {
     try {
       const config = loadConfig();
@@ -39,6 +49,7 @@ program
         workstation: config.workstation,
         workdir: opts.workdir,
         source: opts.source,
+        attributes: opts.attr,
       });
     } catch (err: unknown) {
       process.stderr.write(`mnemo push error: ${err instanceof Error ? err.message : String(err)}\n`);
