@@ -16,7 +16,7 @@ export interface AlarmThresholds {
   lambdaAppErrorCount?: number;
   /** P99 duration threshold in ms for ingest and recall (default 10000). */
   ingestDurationP99Ms?: number;
-  /** P99 duration threshold in ms for context extractor and digest (default 120000). */
+  /** P99 duration threshold in ms for context extractor and digest (default 180000). */
   extractorDurationP99Ms?: number;
   /** Lambda throttle count threshold (default 1). */
   throttleCount?: number;
@@ -62,7 +62,7 @@ export class ObservabilityConstruct extends Construct {
     const lambdaErrorCount = thresholds.lambdaErrorCount ?? 3;
     const lambdaAppErrorCount = thresholds.lambdaAppErrorCount ?? 1;
     const ingestDurationP99Ms = thresholds.ingestDurationP99Ms ?? 10000;
-    const extractorDurationP99Ms = thresholds.extractorDurationP99Ms ?? 120000;
+    const extractorDurationP99Ms = thresholds.extractorDurationP99Ms ?? 180000;
     const throttleCount = thresholds.throttleCount ?? 1;
     const api5xxCount = thresholds.api5xxCount ?? 5;
 

@@ -112,11 +112,11 @@ describe('ObservabilityConstruct', () => {
     const template = buildStack();
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'teststack-contextextractor-duration-p99',
-      Threshold: 120000,
+      Threshold: 180000,
     });
     template.hasResourceProperties('AWS::CloudWatch::Alarm', {
       AlarmName: 'teststack-digest-duration-p99',
-      Threshold: 120000,
+      Threshold: 180000,
     });
   });
 

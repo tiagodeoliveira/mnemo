@@ -36,6 +36,7 @@ function getTaskDomains(): string[] {
 
 const AGENTCORE_RECORD_LIMIT = 16_000;
 const MAX_META_LENGTH = 128;
+const CONSOLIDATION_TOP_K = parseInt(process.env.CONSOLIDATION_TOP_K || '5', 10);
 
 function sanitizeMetaValue(value: string): string {
   return value.replace(/[\n\r]/g, ' ').slice(0, MAX_META_LENGTH);
@@ -240,7 +241,7 @@ async function readExistingRecords(
         namespace,
         searchCriteria: {
           searchQuery: 'all facts, decisions, context, insights, and summaries',
-          topK: 20,
+          topK: CONSOLIDATION_TOP_K,
         },
       })
     );
