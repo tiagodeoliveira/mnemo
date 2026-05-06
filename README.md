@@ -270,6 +270,16 @@ Copies shim scripts to `~/.mnemo/hooks/codex/` and registers them in `~/.codex/h
 
 The transcript parser auto-detects the format (Claude Code vs Codex) so the same `mnemo hook` commands handle both clients transparently. Codex runs commands in a network-restricted sandbox by default, but hooks fire as external processes outside the sandbox, so network calls to the mnemo API work without any special configuration.
 
+### Gemini CLI
+
+```bash
+mnemo install gemini-cli
+```
+
+Copies Gemini-specific shim scripts to `~/.mnemo/hooks/gemini-cli/` and registers them in `~/.gemini/settings.json` (SessionStart for recall, AfterAgent for push). Override the destination with `--mnemo-hooks-dir /custom/path`.
+
+Gemini CLI hooks require JSON-only stdout, so the Gemini shims always return `{}` when there is no context to inject. The push hook uses Gemini's AfterAgent payload (`prompt` and `prompt_response`) instead of depending on Gemini's private transcript JSON shape.
+
 ### OpenClaw
 
 ```bash
@@ -305,7 +315,7 @@ tail -f ~/.mnemo/mnemo.log
 Any AI tool with a hook or plugin system can integrate with mnemo:
 
 1. On session start, pipe `{"cwd":"/path"}` to `mnemo hook session-start` and inject the returned JSON into the conversation.
-2. After each prompt, pipe `{"session_id":"...","transcript_path":"...","cwd":"..."}` to `mnemo hook prompt-submit` to push turns.
+2. After each prompt, pipe `{"session_id":"...","transcript_path":"...","cwd":"..."}` to `mnemo hook prompt-submit` to push turns. Clients with explicit post-turn fields can also pipe a Gemini-style `AfterAgent` payload with `prompt`, `prompt_response`, and `timestamp`.
 
 The transcript parser currently supports Claude Code and Codex JSONL formats. Adding support for a new format requires implementing a turn extractor in `cli/src/transcript.ts`.
 
@@ -410,4 +420,3 @@ The entire stack runs on serverless infrastructure, so cost scales with usage. H
 | **Total** | **~$1.75** | **~$0.58** | |
 
 AgentCore is the dominant cost, driven primarily by memory retrievals ($0.50/1000 retrievals) and runtime compute for the built-in extraction strategies. Everything else is effectively free-tier for personal use. Bedrock InvokeModel costs (Claude Sonnet for context extraction and digest generation) are minimal and included in the Lambda line.
-

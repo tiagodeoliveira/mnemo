@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-const SUPPORTED_CLIENTS = ['claude-code', 'codex', 'openclaw'] as const;
+const SUPPORTED_CLIENTS = ['claude-code', 'codex', 'gemini-cli', 'openclaw'] as const;
 type SupportedClient = typeof SUPPORTED_CLIENTS[number];
 
 const OPENCLAW_HOOK_NAME = 'mnemo';
@@ -78,11 +78,13 @@ function reconcileMnemoHookEntry(
 function resolveAssetDir(client: SupportedClient): string {
   const base = path.resolve(__dirname, '..', '..', 'assets');
   if (client === 'openclaw') return path.join(base, 'openclaw', OPENCLAW_HOOK_NAME);
+  if (client === 'gemini-cli') return path.join(base, 'gemini-cli');
   return path.join(base, 'shared');
 }
 
 function defaultSettingsPath(client: SupportedClient): string {
   if (client === 'codex') return path.join(os.homedir(), '.codex', 'hooks.json');
+  if (client === 'gemini-cli') return path.join(os.homedir(), '.gemini', 'settings.json');
   return path.join(os.homedir(), '.claude', 'settings.json');
 }
 
@@ -150,6 +152,19 @@ function installClientShims(client: SupportedClient, destRoot: string): string {
 const SESSION_START_MATCHER: Record<string, string> = {
   'claude-code': '*',
   'codex': 'startup',
+  'gemini-cli': 'startup',
+};
+
+const PROMPT_EVENT: Record<string, string> = {
+  'claude-code': 'UserPromptSubmit',
+  'codex': 'UserPromptSubmit',
+  'gemini-cli': 'AfterAgent',
+};
+
+const HOOK_TIMEOUTS: Record<string, { sessionStart: number; prompt: number }> = {
+  'claude-code': { sessionStart: 15, prompt: 10 },
+  'codex': { sessionStart: 15, prompt: 10 },
+  'gemini-cli': { sessionStart: 15000, prompt: 10000 },
 };
 
 function installClientHooks(settingsPath: string, shimDir: string, client: SupportedClient, force = false): boolean {
@@ -159,15 +174,17 @@ function installClientHooks(settingsPath: string, shimDir: string, client: Suppo
   if (!settings.hooks) settings.hooks = {};
 
   const sessionStartHooks = settings.hooks.SessionStart || [];
-  const promptSubmitHooks = settings.hooks.UserPromptSubmit || [];
+  const promptEvent = PROMPT_EVENT[client] || 'UserPromptSubmit';
+  const promptSubmitHooks = settings.hooks[promptEvent] || [];
 
   const sessionCmd = `bash ${shellQuote(path.join(shimDir, 'session-start.sh'))}`;
   const promptCmd = `bash ${shellQuote(path.join(shimDir, 'prompt-submit.sh'))}`;
   const sessionMatcher = SESSION_START_MATCHER[client] || '*';
+  const timeouts = HOOK_TIMEOUTS[client] || HOOK_TIMEOUTS['claude-code'];
 
   if (force) {
-    settings.hooks.SessionStart = reconcileMnemoHookEntry(sessionStartHooks, sessionMatcher, sessionCmd, 15);
-    settings.hooks.UserPromptSubmit = reconcileMnemoHookEntry(promptSubmitHooks, '*', promptCmd, 10);
+    settings.hooks.SessionStart = reconcileMnemoHookEntry(sessionStartHooks, sessionMatcher, sessionCmd, timeouts.sessionStart);
+    settings.hooks[promptEvent] = reconcileMnemoHookEntry(promptSubmitHooks, '*', promptCmd, timeouts.prompt);
     const next = JSON.stringify(settings, null, 2);
     if (next === existingContent) return false;
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
@@ -182,19 +199,19 @@ function installClientHooks(settingsPath: string, shimDir: string, client: Suppo
   if (!containsMnemoHook(sessionStartHooks)) {
     sessionStartHooks.push({
       matcher: sessionMatcher,
-      hooks: [{ type: 'command', command: sessionCmd, timeout: 15 }],
+      hooks: [{ type: 'command', command: sessionCmd, timeout: timeouts.sessionStart }],
     });
   }
 
   if (!containsMnemoHook(promptSubmitHooks)) {
     promptSubmitHooks.push({
       matcher: '*',
-      hooks: [{ type: 'command', command: promptCmd, timeout: 10 }],
+      hooks: [{ type: 'command', command: promptCmd, timeout: timeouts.prompt }],
     });
   }
 
   settings.hooks.SessionStart = sessionStartHooks;
-  settings.hooks.UserPromptSubmit = promptSubmitHooks;
+  settings.hooks[promptEvent] = promptSubmitHooks;
 
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));

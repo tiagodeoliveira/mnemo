@@ -152,6 +152,126 @@ describe('hook-prompt-submit', () => {
     expect(userTurns).toEqual([{ role: 'user', content: 'prompt 2' }]);
   });
 
+  it('pushes repeated legitimate turns at different transcript positions', async () => {
+    writeTranscript([
+      { type: 'user', message: { content: 'repeat me' } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'first reply' }] } },
+      { type: 'user', message: { content: 'repeat me' } },
+    ]);
+
+    await executeHookPromptSubmit({
+      session_id: 'repeated-turn-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    const userTurns = body.turns.filter((t: { role: string }) => t.role === 'user');
+    expect(userTurns).toEqual([
+      { role: 'user', content: 'repeat me' },
+      { role: 'user', content: 'repeat me' },
+    ]);
+
+    await executeHookPromptSubmit({
+      session_id: 'repeated-turn-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it('does not re-push old turns when session activity is prepended later', async () => {
+    writeTranscript([
+      { type: 'user', message: { content: 'fix it' } },
+    ]);
+
+    await executeHookPromptSubmit({
+      session_id: 'activity-prepend-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+    expect(mockFetch).toHaveBeenCalledOnce();
+
+    writeTranscript([
+      { type: 'user', message: { content: 'fix it' } },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Read', input: { file_path: path.join(tmpDir, 'src', 'main.ts') } },
+            { type: 'text', text: 'done' },
+          ],
+        },
+      },
+    ]);
+
+    await executeHookPromptSubmit({
+      session_id: 'activity-prepend-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const secondBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+    const userTurns = secondBody.turns.filter((t: { role: string }) => t.role === 'user');
+    expect(userTurns).toEqual([]);
+    expect(secondBody.turns).toContainEqual({ role: 'assistant', content: 'done' });
+  });
+
+  it('pushes gemini AfterAgent prompt and response without parsing transcript internals', async () => {
+    await executeHookPromptSubmit({
+      session_id: 'gemini-session',
+      cwd: tmpDir,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-05-06T15:10:00.000Z',
+      prompt: 'write a plan',
+      prompt_response: 'here is the plan',
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.context.source).toBe('gemini-cli');
+    expect(body.turns).toEqual([
+      { role: 'user', content: 'write a plan' },
+      { role: 'assistant', content: 'here is the plan' },
+    ]);
+
+    await executeHookPromptSubmit({
+      session_id: 'gemini-session',
+      cwd: tmpDir,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-05-06T15:10:00.000Z',
+      prompt: 'write a plan',
+      prompt_response: 'here is the plan',
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+  });
+
+  it('pushes repeated gemini prompts when they arrive as separate hook events', async () => {
+    await executeHookPromptSubmit({
+      session_id: 'gemini-repeat-session',
+      cwd: tmpDir,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-05-06T15:10:00.000Z',
+      prompt: 'again',
+      prompt_response: 'done',
+    });
+
+    await executeHookPromptSubmit({
+      session_id: 'gemini-repeat-session',
+      cwd: tmpDir,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-05-06T15:11:00.000Z',
+      prompt: 'again',
+      prompt_response: 'done',
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it('does not update the cursor if push fails, so the next run retries', async () => {
     writeTranscript([{ type: 'user', message: { content: 'flaky' } }]);
     mockFetch.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });

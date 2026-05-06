@@ -215,5 +215,13 @@ describe('cursor', () => {
       const hash2 = hashTurn({ role: 'assistant', content: 'hello' });
       expect(hash1).not.toBe(hash2);
     });
+
+    it('can include occurrence sequence in the hash', () => {
+      const turn = { role: 'user', content: 'hello' };
+      const hash1 = hashTurn(turn, 0);
+      const hash2 = hashTurn(turn, 1);
+      expect(hash1).not.toBe(hash2);
+      expect(hash1).not.toBe(hashTurn(turn));
+    });
   });
 });

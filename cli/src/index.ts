@@ -117,7 +117,7 @@ program
 program
   .command('install')
   .description('Create mnemo config and install hooks for an AI client')
-  .argument('<client>', 'Client to integrate with (claude-code, codex, openclaw)')
+  .argument('<client>', 'Client to integrate with (claude-code, codex, gemini-cli, openclaw)')
   .option('--mnemo-hooks-dir <path>', 'Destination for client shim files (default ~/.mnemo/hooks)')
   .option('--openclaw-hooks-dir <path>', 'Destination OpenClaw hooks directory')
   .option('--channels <list>', 'Comma-separated OpenClaw channel allowlist')
@@ -172,7 +172,8 @@ program
         }
       } else if (result.hooksInstalled) {
         const verb = opts.force ? 'Updated' : 'Installed';
-        console.log(`${verb} ${client} hooks at ${result.installedHooksPath} (SessionStart + UserPromptSubmit).`);
+        const promptEvent = client === 'gemini-cli' ? 'AfterAgent' : 'UserPromptSubmit';
+        console.log(`${verb} ${client} hooks at ${result.installedHooksPath} (SessionStart + ${promptEvent}).`);
       } else {
         console.log(`${client} hooks already up to date at ${result.installedHooksPath}.`);
       }

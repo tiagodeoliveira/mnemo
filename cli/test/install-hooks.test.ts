@@ -236,6 +236,87 @@ describe('install-hooks codex', () => {
   });
 });
 
+describe('install-hooks gemini-cli', () => {
+  const tmpDir = path.join(os.tmpdir(), 'mnemo-gemini-test-' + Date.now());
+  const mnemoConfigPath = path.join(tmpDir, '.mnemo', 'config.json');
+  const geminiSettingsPath = path.join(tmpDir, '.gemini', 'settings.json');
+  const mnemoHooksDir = path.join(tmpDir, '.mnemo', 'hooks');
+
+  beforeEach(() => {
+    fs.mkdirSync(path.join(tmpDir, '.mnemo'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.gemini'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('creates gemini settings.json and wires SessionStart plus AfterAgent hooks', () => {
+    const result = installHooks({ client: 'gemini-cli', mnemoConfigPath, clientSettingsPath: geminiSettingsPath, mnemoHooksDir });
+
+    expect(fs.existsSync(geminiSettingsPath)).toBe(true);
+
+    const shimDir = path.join(mnemoHooksDir, 'gemini-cli');
+    expect(fs.existsSync(path.join(shimDir, 'session-start.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(shimDir, 'prompt-submit.sh'))).toBe(true);
+
+    const config = JSON.parse(fs.readFileSync(geminiSettingsPath, 'utf-8'));
+    expect(config.hooks.SessionStart).toHaveLength(1);
+    expect(config.hooks.AfterAgent).toHaveLength(1);
+    expect(config.hooks.SessionStart[0].matcher).toBe('startup');
+    expect(config.hooks.SessionStart[0].hooks[0].timeout).toBe(15000);
+    expect(config.hooks.AfterAgent[0].hooks[0].timeout).toBe(10000);
+    expect(config.hooks.SessionStart[0].hooks[0].command).toBe(bashCmd(path.join(shimDir, 'session-start.sh')));
+    expect(config.hooks.AfterAgent[0].hooks[0].command).toBe(bashCmd(path.join(shimDir, 'prompt-submit.sh')));
+
+    expect(result.configCreated).toBe(true);
+    expect(result.hooksInstalled).toBe(true);
+    expect(result.installedHooksPath).toBe(shimDir);
+  });
+
+  it('preserves existing gemini hooks and merges mnemo hooks', () => {
+    fs.writeFileSync(geminiSettingsPath, JSON.stringify({
+      hooks: {
+        BeforeTool: [{ matcher: 'read_.*', hooks: [{ type: 'command', command: 'echo pre' }] }],
+      },
+    }, null, 2));
+
+    const result = installHooks({ client: 'gemini-cli', mnemoConfigPath, clientSettingsPath: geminiSettingsPath, mnemoHooksDir });
+
+    const config = JSON.parse(fs.readFileSync(geminiSettingsPath, 'utf-8'));
+    expect(config.hooks.BeforeTool).toHaveLength(1);
+    expect(config.hooks.SessionStart).toHaveLength(1);
+    expect(config.hooks.AfterAgent).toHaveLength(1);
+
+    expect(result.hooksInstalled).toBe(true);
+  });
+
+  it('--force rewrites stale gemini mnemo entries and preserves event names', () => {
+    fs.writeFileSync(geminiSettingsPath, JSON.stringify({
+      hooks: {
+        SessionStart: [
+          { matcher: 'startup', hooks: [{ type: 'command', command: 'bash /stale/path/mnemo/session-start.sh', timeout: 15000 }] },
+        ],
+        AfterAgent: [
+          { matcher: '*', hooks: [{ type: 'command', command: 'bash /stale/path/mnemo/prompt-submit.sh', timeout: 10000 }] },
+        ],
+      },
+    }, null, 2));
+
+    const result = installHooks({ client: 'gemini-cli', mnemoConfigPath, clientSettingsPath: geminiSettingsPath, mnemoHooksDir, force: true });
+
+    const shimDir = path.join(mnemoHooksDir, 'gemini-cli');
+    const config = JSON.parse(fs.readFileSync(geminiSettingsPath, 'utf-8'));
+
+    expect(result.hooksInstalled).toBe(true);
+    expect(config.hooks.SessionStart).toHaveLength(1);
+    expect(config.hooks.AfterAgent).toHaveLength(1);
+    expect(config.hooks.SessionStart[0].matcher).toBe('startup');
+    expect(config.hooks.SessionStart[0].hooks[0].command).toBe(bashCmd(path.join(shimDir, 'session-start.sh')));
+    expect(config.hooks.AfterAgent[0].hooks[0].command).toBe(bashCmd(path.join(shimDir, 'prompt-submit.sh')));
+  });
+});
+
 describe('install-hooks openclaw', () => {
   const tmpDir = path.join(os.tmpdir(), 'mnemo-openclaw-test-' + Date.now());
   const mnemoConfigPath = path.join(tmpDir, '.mnemo', 'config.json');

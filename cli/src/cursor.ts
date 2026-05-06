@@ -9,8 +9,9 @@ export function cursorDir(): string {
   return process.env.MNEMO_CURSOR_DIR || path.join(os.homedir(), '.mnemo', 'cursors');
 }
 
-export function hashTurn(turn: { role: string; content: string }): string {
-  return crypto.createHash('sha256').update(`${turn.role}\0${turn.content}`).digest('hex');
+export function hashTurn(turn: { role: string; content: string }, occurrence?: number): string {
+  const sequence = occurrence === undefined ? '' : `\0${occurrence}`;
+  return crypto.createHash('sha256').update(`${turn.role}\0${turn.content}${sequence}`).digest('hex');
 }
 
 function sanitizeSessionId(id: string): string {
