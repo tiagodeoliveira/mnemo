@@ -290,6 +290,7 @@ Rules:
 - Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list.
 - Open with the person's name if it is known from the existing bio or the new observations. If no name has ever been stated, refer to them as "the actor" (lowercase, no quotes) and do NOT invent one.
 - Merge the new information with the existing bio. Drop outdated or contradicted facts — keep the most recent version.
+- Biographical scope only. Project names and one-sentence scope are fine ("she is building a real-time meeting assistant called meeting_companion"). Do NOT include library versions, source file paths, module names, port numbers, database choices, authentication providers, test counts, or any code-level detail. If the existing bio contains such details, strip them out. Those belong in project memory, never in the bio.
 - Stay under ~800 words. A good bio is dense and specific.
 - Do not invent facts. Only include what the existing bio or new observations clearly establish.
 - Write in third person for consistency.
@@ -572,6 +573,7 @@ WHAT TO SKIP:
 - Transient state ("I'm tired today", "I'm annoyed at this bug")
 - Opinions the user holds about tools, unless they define their identity (e.g., "I'm a Rust zealot" is about identity; "I don't like Java" is just an opinion)
 - Operational preferences like coding style or communication style — those live elsewhere
+- Implementation details of any project or codebase. It is fine to say "the actor is building a project called meeting_companion, a real-time meeting assistant" — a name and one-sentence scope. It is NOT fine to include version numbers, library names, source file paths, module names, port numbers, database choices, authentication providers, test counts, or any code-level detail. Those belong in project memory, never in the bio.
 
 OUTPUT FORMAT:
 ABOUT:
