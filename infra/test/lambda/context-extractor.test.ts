@@ -446,25 +446,34 @@ Discussed travel plans for Japan`;
 
     const CONSOLIDATED_RESPONSE = 'CDK was chosen over SAM\nUsing CfnMemory for lifecycle\nAdded memory consolidation to context extractor';
 
-    let llmCallCount = 0;
-    mockBedrockSend.mockImplementation(() => {
-      llmCallCount++;
-      if (llmCallCount === 1) {
-        return Promise.resolve(mockLlmResponse(LLM_RESPONSE_FULL));
+    // The extractor runs callLlm and callAboutLlm in parallel, so routing by
+    // call order is racy. Route by prompt content instead: the about pass
+    // identifies itself by its prompt header, main extraction by TASK format,
+    // consolidation by the "EXISTING RECORDS" block.
+    mockBedrockSend.mockImplementation((cmd: { input: { body: string } }) => {
+      const prompt = JSON.parse(cmd.input.body).messages[0].content as string;
+      if (prompt.includes('biographical facts about the person')) {
+        // About pass — return a NONE response so we don't trigger an about write
+        return Promise.resolve(mockLlmResponse('ABOUT: NONE'));
       }
-      // Consolidation calls
-      return Promise.resolve(mockLlmResponse(CONSOLIDATED_RESPONSE));
+      if (prompt.includes('EXISTING RECORDS')) {
+        return Promise.resolve(mockLlmResponse(CONSOLIDATED_RESPONSE));
+      }
+      return Promise.resolve(mockLlmResponse(LLM_RESPONSE_FULL));
     });
 
     await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
 
-    // LLM called: 1 extraction + 1 consolidation (only project has existing records)
-    expect(mockBedrockSend).toHaveBeenCalledTimes(2);
+    // LLM called: 1 main extraction + 1 about extraction + 1 consolidation
+    // (only the project namespace has existing records in this test)
+    expect(mockBedrockSend).toHaveBeenCalledTimes(3);
 
-    // Verify consolidation prompt includes existing records
-    const consolidationCall = mockBedrockSend.mock.calls[1][0];
-    const consolidationBody = JSON.parse(consolidationCall.input.body);
-    const consolidationContent = consolidationBody.messages[0].content;
+    // Find the consolidation call by prompt content
+    const consolidationCall = mockBedrockSend.mock.calls.find((args) => {
+      const prompt = JSON.parse((args[0] as { input: { body: string } }).input.body).messages[0].content as string;
+      return prompt.includes('EXISTING RECORDS');
+    });
+    const consolidationContent = JSON.parse((consolidationCall![0] as { input: { body: string } }).input.body).messages[0].content as string;
     expect(consolidationContent).toContain('CDK was chosen over SAM');
     expect(consolidationContent).toContain('Using CfnMemory for lifecycle');
     expect(consolidationContent).toContain('EXISTING RECORDS');
@@ -603,8 +612,6 @@ Discussed travel plans for Japan`;
     await expect(
       handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')))
     ).resolves.toBeUndefined();
-
-    vi.restoreAllMocks();
   });
 
   it('truncates record content that exceeds AgentCore 16K limit', async () => {
@@ -665,5 +672,116 @@ Discussed travel plans for Japan`;
 
     const creates = getBatchCreateCalls();
     expect(creates).toHaveLength(0);
+  });
+
+  it('writes an about record when the about extractor returns content', async () => {
+    const payload = makeS3Payload('session-about', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=claude-code, date=2026-04-16]' } },
+      { role: 'USER', content: { text: "I'm a principal engineer at Amazon, working on memory systems." }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    mockBedrockSend.mockImplementation((cmd: { input: { body: string } }) => {
+      const prompt = JSON.parse(cmd.input.body).messages[0].content as string;
+      if (prompt.includes('biographical facts about the person')) {
+        return Promise.resolve(mockLlmResponse('ABOUT:\nTiago is a principal engineer at Amazon.\nWorks on memory systems.'));
+      }
+      return Promise.resolve(mockLlmResponse(LLM_RESPONSE_NO_PROJECT));
+    });
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    const aboutWrite = creates.find((c) => c.records[0].namespaces[0] === '/about/tiago/');
+    expect(aboutWrite).toBeDefined();
+    expect(aboutWrite!.records[0].content.text).toContain('principal engineer');
+  });
+
+  it('skips about write when the about extractor returns NONE', async () => {
+    const payload = makeS3Payload('session-about-none', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=claude-code, date=2026-04-16]' } },
+      { role: 'USER', content: { text: 'Need to fix this bug real quick' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    mockBedrockSend.mockImplementation((cmd: { input: { body: string } }) => {
+      const prompt = JSON.parse(cmd.input.body).messages[0].content as string;
+      if (prompt.includes('biographical facts about the person')) {
+        return Promise.resolve(mockLlmResponse('ABOUT: NONE'));
+      }
+      return Promise.resolve(mockLlmResponse(LLM_RESPONSE_NO_PROJECT));
+    });
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    expect(creates.find((c) => c.records[0].namespaces[0].startsWith('/about/'))).toBeUndefined();
+  });
+
+  it('skips about write when the response has no ABOUT marker', async () => {
+    // Guards against an LLM that ignores the format and spits prose directly.
+    const payload = makeS3Payload('session-about-malformed', [
+      { role: 'OTHER', content: { text: '[mnemo-context: source=claude-code, date=2026-04-16]' } },
+      { role: 'USER', content: { text: 'hello' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    mockBedrockSend.mockImplementation((cmd: { input: { body: string } }) => {
+      const prompt = JSON.parse(cmd.input.body).messages[0].content as string;
+      if (prompt.includes('biographical facts about the person')) {
+        return Promise.resolve(mockLlmResponse('I cannot find any biographical information in this conversation.'));
+      }
+      return Promise.resolve(mockLlmResponse(LLM_RESPONSE_NO_PROJECT));
+    });
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    expect(creates.find((c) => c.records[0].namespaces[0].startsWith('/about/'))).toBeUndefined();
+  });
+
+  it('runs about extraction in parallel with main extraction', async () => {
+    const payload = makeS3Payload('session-parallel', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=claude-code, date=2026-04-16]' } },
+      { role: 'USER', content: { text: 'Working on mnemo, also I lead the platform team.' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    mockBedrockSend.mockImplementation((cmd: { input: { body: string } }) => {
+      const prompt = JSON.parse(cmd.input.body).messages[0].content as string;
+      if (prompt.includes('biographical facts about the person')) {
+        return Promise.resolve(mockLlmResponse('ABOUT:\nTiago leads the platform team.'));
+      }
+      return Promise.resolve(mockLlmResponse(LLM_RESPONSE_FULL));
+    });
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // Two extraction calls (one main, one about) both fire before any writes.
+    // We assert on the count rather than ordering since parallel scheduling
+    // is non-deterministic.
+    const bedrockCalls = mockBedrockSend.mock.calls.map((args) => {
+      const prompt = JSON.parse((args[0] as { input: { body: string } }).input.body).messages[0].content as string;
+      return prompt.includes('biographical facts about the person') ? 'about' : 'main';
+    });
+    expect(bedrockCalls.filter((c) => c === 'main')).toHaveLength(1);
+    expect(bedrockCalls.filter((c) => c === 'about')).toHaveLength(1);
+
+    // Both pipelines produced writes
+    const creates = getBatchCreateCalls();
+    expect(creates.find((c) => c.records[0].namespaces[0] === '/about/tiago/')).toBeDefined();
+    expect(creates.find((c) => c.records[0].namespaces[0] === '/projects/tiago/mnemo/')).toBeDefined();
   });
 });

@@ -30,6 +30,7 @@ export interface RecallResponse {
   preferences?: MemoryRecord[];
   facts?: MemoryRecord[];
   episodes?: MemoryRecord[];
+  about?: MemoryRecord[];
   project?: {
     name: string;
     memories: MemoryRecord[];

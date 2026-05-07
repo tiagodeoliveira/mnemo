@@ -63,6 +63,7 @@ program
   .option('--preferences', 'Include preferences')
   .option('--facts', 'Include facts')
   .option('--episodes', 'Include episodes')
+  .option('--about', 'Include about-me biographical profile')
   .option('--project [name]', 'Include project memories (auto-detected from git if no name given)')
   .option('--task <name>', 'Include task memories (e.g., coding, studying, meeting)')
   .option('--date <yyyy-mm-dd>', 'Include daily summary/log')
@@ -76,7 +77,7 @@ program
       const hasProject = opts.project !== undefined;
       const hasTask = opts.task !== undefined;
       const hasDate = opts.date !== undefined || opts.daily;
-      const hasDimension = opts.preferences || opts.facts || opts.episodes || hasProject || hasTask || hasDate || opts.all;
+      const hasDimension = opts.preferences || opts.facts || opts.episodes || opts.about || hasProject || hasTask || hasDate || opts.all;
 
       if (!hasDimension) {
         program.commands.find((c) => c.name() === 'recall')!.help();
@@ -92,6 +93,7 @@ program
       const wantPreferences = opts.all || opts.preferences;
       const wantFacts = opts.all || opts.facts;
       const wantEpisodes = opts.all || opts.episodes;
+      const wantAbout = opts.all || opts.about;
 
       const response = await executeRecall({
         apiUrl: config.apiUrl,
@@ -100,6 +102,7 @@ program
         preferences: wantPreferences,
         facts: wantFacts,
         episodes: wantEpisodes,
+        about: wantAbout,
         project,
         task: opts.task || (opts.all ? 'coding' : undefined),
         date,

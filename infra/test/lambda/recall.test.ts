@@ -81,6 +81,25 @@ describe('recall lambda', () => {
     expect(body.episodes).toBeUndefined();
   });
 
+  it('queries the about namespace when about=true', async () => {
+    mockSend.mockImplementation((cmd: Record<string, Record<string, unknown>>) => {
+      if ((cmd.input.namespace as string) === '/about/tiago/') {
+        return Promise.resolve(mockMemoryResponse([{ text: 'Tiago is a principal engineer.', score: 0.99 }]));
+      }
+      return Promise.resolve({ memoryRecordSummaries: [] });
+    });
+
+    const result = await handler(makeEvent({ about: 'true' }));
+    const body = JSON.parse(result.body);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const call = mockSend.mock.calls[0][0];
+    expect(call.input.namespace).toBe('/about/tiago/');
+    expect(body.about).toBeDefined();
+    expect(body.about[0].content).toBe('Tiago is a principal engineer.');
+    expect(body.preferences).toBeUndefined();
+  });
+
   it('queries project namespace when project passed', async () => {
     const result = await handler(makeEvent({ project: 'mnemo' }));
     const body = JSON.parse(result.body);

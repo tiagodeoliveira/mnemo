@@ -63,6 +63,18 @@ describe('recall command', () => {
     expect(url).not.toContain('project');
   });
 
+  it('passes about=true when about flag is set', async () => {
+    await executeRecall({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      workstation: 'laptop',
+      about: true,
+    });
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('about=true');
+  });
+
   it('passes task param to /recall', async () => {
     await executeRecall({
       apiUrl: 'https://api.example.com/v1',
@@ -132,6 +144,19 @@ describe('formatRecallOutput', () => {
   it('returns empty string when response has no data', () => {
     const output = formatRecallOutput({}, true);
     expect(output).toBe('');
+  });
+
+  it('renders the about section as prose (not a bullet list)', () => {
+    const response = {
+      about: [
+        { id: 'a1', content: 'Tiago is a principal engineer at Amazon, currently working on memory systems.', score: 0.99, createdAt: '' },
+      ],
+    };
+    const output = formatRecallOutput(response, true);
+    expect(output).toContain('## About');
+    expect(output).toContain('Tiago is a principal engineer');
+    // Should NOT prefix with bullet markers
+    expect(output).not.toContain('- Tiago is a principal engineer');
   });
 
   it('extracts plain text from JSON preference content', () => {

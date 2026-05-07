@@ -5,6 +5,7 @@ export interface RecallOptions {
   preferences?: boolean;
   facts?: boolean;
   episodes?: boolean;
+  about?: boolean;
   project?: string;
   task?: string;
   date?: string;
@@ -21,6 +22,7 @@ interface RecallResponse {
   preferences?: MemoryRecord[];
   facts?: MemoryRecord[];
   episodes?: MemoryRecord[];
+  about?: MemoryRecord[];
   project?: {
     name: string;
     memories: MemoryRecord[];
@@ -40,6 +42,7 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   if (options.preferences) params.set('preferences', 'true');
   if (options.facts) params.set('facts', 'true');
   if (options.episodes) params.set('episodes', 'true');
+  if (options.about) params.set('about', 'true');
   if (options.project) params.set('project', options.project);
   if (options.task) params.set('task', options.task);
   if (options.date) params.set('date', options.date);
@@ -137,6 +140,10 @@ export function formatRecallOutput(response: RecallResponse, visibleOrOpts: bool
 
   const sections: string[] = [];
 
+  if (response.about && response.about.length > 0) {
+    const bio = response.about.map((r) => r.content).join('\n\n');
+    sections.push(`## About\n${bio}\n`);
+  }
   if (response.preferences) {
     sections.push(formatBulletSection('Preferences', response.preferences, extractPreference));
   }

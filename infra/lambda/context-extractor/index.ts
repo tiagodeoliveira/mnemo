@@ -223,7 +223,7 @@ async function writeMemoryRecord(
   );
 }
 
-type DimensionType = 'project' | 'task';
+type DimensionType = 'project' | 'task' | 'about';
 
 interface ExistingRecord {
   id: string;
@@ -280,6 +280,28 @@ function buildConsolidationPrompt(
   const existingText = existing
     .map((r, i) => `Record ${i + 1}:\n${r.content}`)
     .join('\n\n');
+
+  if (dimensionType === 'about') {
+    return `You are maintaining a living biographical profile of a person, updated over time as new information surfaces about them.
+
+This is an ABOUT memory — who the actor is as a person: background, role, expertise, ongoing interests, identity attributes. Think of it as a short "About" section on someone's personal site.
+
+Rules:
+- Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list.
+- Merge the new information with the existing bio. Drop outdated or contradicted facts — keep the most recent version.
+- Stay under ~800 words. A good bio is dense and specific.
+- Do not invent facts. Only include what the existing bio or new observations clearly establish.
+- Write in third person ("Tiago is a...") for consistency.
+- HARD LIMIT: output must be under ${AGENTCORE_RECORD_LIMIT} characters.
+
+EXISTING BIO:
+${existingText || '(none yet)'}
+
+NEW OBSERVATIONS TO INCORPORATE:
+${newContent}
+
+Output ONLY the merged bio text — no headers, labels, or explanations.`;
+  }
 
   const typeInstructions = dimensionType === 'project'
     ? `This is a PROJECT memory for "${sanitizeMetaValue(metadata.project || 'unknown')}". Keep architecture decisions, design rationale, and system constraints. Drop implementation specifics that belong in the code itself.`
@@ -381,7 +403,18 @@ export async function handler(event: SNSEvent): Promise<void> {
     if (!conversationText) return;
 
     const allowedDomains = getTaskDomains();
-    const result = await callLlm(conversationText, allowedDomains, metadata);
+    // Run the standard extraction and the about extraction in parallel.
+    // Each hits Bedrock once; combined latency is max(standard, about).
+    const [result, aboutContent] = await Promise.all([
+      callLlm(conversationText, allowedDomains, metadata),
+      callAboutLlm(conversationText).catch((err: unknown) => {
+        // About extraction is best-effort — a failure here shouldn't block
+        // project/task/daily. Log and move on.
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`About extraction failed for session ${sessionId}: ${message}`);
+        return undefined;
+      }),
+    ]);
     if (!result) {
       console.warn(`Failed to parse LLM extraction for session ${sessionId}`);
       return;
@@ -405,8 +438,9 @@ export async function handler(event: SNSEvent): Promise<void> {
     const hasProject = !!projectName && !isNone(facts);
     const hasTask = taskDomain !== 'unknown' && !isNone(facts);
     const hasDaily = !isNone(daily);
+    const hasAbout = !!aboutContent && !isNone(aboutContent);
 
-    if (!hasProject && !hasTask && !hasDaily) return;
+    if (!hasProject && !hasTask && !hasDaily && !hasAbout) return;
 
     const writes: Array<{ label: string; promise: Promise<void> }> = [];
 
@@ -431,6 +465,14 @@ export async function handler(event: SNSEvent): Promise<void> {
       });
     }
 
+    if (hasAbout) {
+      console.log(`about extracted: ${aboutContent!.slice(0, 500)}`);
+      writes.push({
+        label: `about`,
+        promise: writeConsolidatedRecord(memoryId, `/about/${actorId}/`, 'about', aboutContent!, metadata),
+      });
+    }
+
     const results = await Promise.allSettled(writes.map((w) => w.promise));
     const failures = results
       .map((r, i) => ({ ...r, label: writes[i].label }))
@@ -448,6 +490,7 @@ export async function handler(event: SNSEvent): Promise<void> {
       hasProject ? `project="${projectName}"` : null,
       hasTask ? `task="${taskDomain}"` : null,
       hasDaily ? `daily="${date}"` : null,
+      hasAbout ? `about=yes` : null,
       metadata.source ? `source="${metadata.source}"` : null,
     ].filter(Boolean).join(', ');
     console.log(`Extracted context (${parts}) from session ${sessionId}`);
@@ -498,4 +541,64 @@ async function callLlm(conversation: string, allowedDomains: string[], metadata:
   const contentArr = body.content as Record<string, unknown>[] | undefined;
   const text = (contentArr?.[0]?.text as string) || '';
   return parseExtraction(text, allowedDomains);
+}
+
+function buildAboutPrompt(): string {
+  return `You are extracting biographical facts about the person (the "actor") who is participating in this conversation.
+
+WHAT COUNTS AS ABOUT-ME CONTENT:
+- Who they are: role, profession, background, experience, expertise areas
+- What they're doing: active projects, responsibilities, long-running goals
+- Where they come from: career history, education, notable past work
+- Their domain: tools they use daily, technologies they specialize in, industries they work in
+- People in their orbit: team, collaborators, family roles (only if explicitly stated)
+
+STRICT ATTRIBUTION RULES:
+- Extract from USER turns (first-person testimony): "I'm a principal engineer", "I work on mnemo", "I live in California".
+- Extract from ASSISTANT turns ONLY when the assistant is responding to user-supplied content: the user shared a resume, pasted a bio, uploaded a profile, or asked the assistant to analyze something they provided. In that case the assistant's claims are grounded in the user's own material and are trustworthy.
+- DO NOT extract assistant statements that are not grounded in something the user provided. Ignore generic advice, persona statements, or guesses.
+- DO NOT infer. If a fact is not clearly stated, skip it.
+
+WHAT TO SKIP:
+- Transient state ("I'm tired today", "I'm annoyed at this bug")
+- Opinions the user holds about tools, unless they define their identity (e.g., "I'm a Rust zealot" is about identity; "I don't like Java" is just an opinion)
+- Operational preferences like coding style or communication style — those live elsewhere
+
+OUTPUT FORMAT:
+ABOUT:
+<one short factual statement per line, or NONE if nothing biographical surfaced>`;
+}
+
+async function callAboutLlm(conversation: string): Promise<string | undefined> {
+  const prompt = buildAboutPrompt();
+  const response = await bedrock.send(
+    new InvokeModelCommand({
+      modelId: process.env.MODEL_ID || 'us.anthropic.claude-sonnet-4-6',
+      body: JSON.stringify({
+        anthropic_version: 'bedrock-2023-05-31',
+        max_tokens: 1024,
+        messages: [
+          {
+            role: 'user',
+            content: `${prompt}\n\nConversation:\n${conversation}`,
+          },
+        ],
+      }),
+    })
+  );
+
+  const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
+  if (body.stop_reason === 'max_tokens') {
+    console.warn('About LLM hit max_tokens — output may be incomplete');
+  }
+  const contentArr = body.content as Record<string, unknown>[] | undefined;
+  const text = (contentArr?.[0]?.text as string) || '';
+  // Require an explicit ABOUT: marker. If the LLM emitted a response that
+  // doesn't conform, treat it as no signal rather than writing noise to the
+  // bio namespace.
+  const match = text.match(/^ABOUT:\s*\n?([\s\S]*)$/im);
+  if (!match) return undefined;
+  const extracted = match[1].trim();
+  if (!extracted || extracted === 'NONE') return undefined;
+  return extracted;
 }

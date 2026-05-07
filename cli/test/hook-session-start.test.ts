@@ -42,6 +42,7 @@ describe('hook-session-start', () => {
     expect(url).toContain('/recall');
     expect(url).toContain('preferences=true');
     expect(url).toContain('facts=true');
+    expect(url).toContain('about=true');
     expect(url).not.toContain('episodes');
     expect(url).toContain('project=test-project');
     expect(url).toContain('task=coding');

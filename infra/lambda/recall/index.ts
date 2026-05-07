@@ -15,7 +15,7 @@ if (!process.env.MEMORY_ID || !process.env.ACTOR_ID) {
 const client = new BedrockAgentCoreClient({});
 const TOP_K = 10;
 
-type ResponseKey = 'preferences' | 'facts' | 'episodes' | 'project' | 'tasks' | 'daily' | 'dailyLog';
+type ResponseKey = 'preferences' | 'facts' | 'episodes' | 'about' | 'project' | 'tasks' | 'daily' | 'dailyLog';
 
 interface NamespaceQuery {
   key: ResponseKey;
@@ -27,6 +27,7 @@ interface RequestedDimensions {
   preferences: boolean;
   facts: boolean;
   episodes: boolean;
+  about: boolean;
   project?: string;
   task?: string;
   date?: string;
@@ -37,6 +38,7 @@ function parseDimensions(params: Record<string, string | undefined>): RequestedD
     preferences: params.preferences === 'true' || params.preferences === '1',
     facts: params.facts === 'true' || params.facts === '1',
     episodes: params.episodes === 'true' || params.episodes === '1',
+    about: params.about === 'true' || params.about === '1',
     project: params.project,
     task: params.task,
     date: params.date,
@@ -67,6 +69,14 @@ function buildQueries(actorId: string, dims: RequestedDimensions): NamespaceQuer
       key: 'episodes',
       namespace: `/episodes/${actorId}/`,
       searchQuery: 'recent work episodes, decisions, reflections, and context',
+    });
+  }
+
+  if (dims.about) {
+    queries.push({
+      key: 'about',
+      namespace: `/about/${actorId}/`,
+      searchQuery: 'biographical profile: who the actor is, background, role, expertise, interests',
     });
   }
 
@@ -163,7 +173,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
           response.daily = { date: dims.date, memories: result.records };
         }
       } else {
-        const key = result.key as 'preferences' | 'facts' | 'episodes';
+        const key = result.key as 'preferences' | 'facts' | 'episodes' | 'about';
         response[key] = result.records;
       }
     }
