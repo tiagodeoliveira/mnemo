@@ -19,9 +19,8 @@ export interface LambdaConstructProps {
   logEncryptionKey: kms.IKey;
   modelId?: string;
   taskDomains?: string[];
+  /** Verified SES sender identity used by the digest Lambda. */
   digestEmailFrom?: string;
-  digestEmailTo?: string;
-  digestTimezone?: string;
 }
 
 export class LambdaConstruct extends Construct {
@@ -150,13 +149,14 @@ export class LambdaConstruct extends Construct {
       })
     );
 
+    // Digest reads actorId, email, and timezone from each SQS message, so it
+    // doesn't need ACTOR_ID in its env. MEMORY_ID stays since it is the same
+    // for every actor served by this stack.
     const digestEnv: Record<string, string> = {
-      ...commonEnv,
+      MEMORY_ID: props.memoryId,
       MODEL_ID: props.modelId || 'us.anthropic.claude-sonnet-4-6',
-      DIGEST_TIMEZONE: props.digestTimezone || 'UTC',
     };
     if (props.digestEmailFrom) digestEnv.DIGEST_EMAIL_FROM = props.digestEmailFrom;
-    if (props.digestEmailTo) digestEnv.DIGEST_EMAIL_TO = props.digestEmailTo;
 
     this.digestLogGroup = new logs.LogGroup(this, 'DigestLogGroup', {
       retention: logs.RetentionDays.ONE_MONTH,
@@ -188,20 +188,16 @@ export class LambdaConstruct extends Construct {
         ],
       })
     );
-    if (props.digestEmailFrom || props.digestEmailTo) {
-      const sesResources: string[] = [];
+    if (props.digestEmailFrom) {
       const region = cdk.Stack.of(this).region;
       const account = cdk.Stack.of(this).account;
-      if (props.digestEmailFrom) {
-        sesResources.push(`arn:aws:ses:${region}:${account}:identity/${props.digestEmailFrom}`);
-      }
-      if (props.digestEmailTo) {
-        sesResources.push(`arn:aws:ses:${region}:${account}:identity/${props.digestEmailTo}`);
-      }
+      // Scope ses:SendEmail to the verified sender identity. Recipient
+      // identity is not required by SES for sending; the per-actor email
+      // address comes from the actors table via the SQS message.
       this.digestFunction.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['ses:SendEmail'],
-          resources: sesResources,
+          resources: [`arn:aws:ses:${region}:${account}:identity/${props.digestEmailFrom}`],
         })
       );
     }

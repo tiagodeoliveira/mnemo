@@ -629,14 +629,12 @@ Discussed travel plans for Japan`;
     }
   });
 
-  it('uses env vars for actorId and memoryId, ignoring payload values', async () => {
+  it('uses actorId from the S3 payload (not env) so multiple actors share one stack', async () => {
     const payload = makeS3Payload('session-env', [
       { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=test, workstation=mac, date=2026-04-16]' } },
       { role: 'USER', content: { text: 'Working on mnemo' }, eventId: 'e1' },
     ]);
-    // Set different values in payload to verify they are ignored
-    payload.actorId = 'someone-else';
-    payload.memoryId = 'other-mem';
+    payload.actorId = 'alice';
 
     mockS3Send.mockResolvedValue({
       Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
@@ -647,8 +645,25 @@ Discussed travel plans for Japan`;
 
     const creates = getBatchCreateCalls();
     const namespaces = creates.map((c) => c.records[0].namespaces[0]);
-    // Should use env ACTOR_ID=tiago, not payload's someone-else
-    expect(namespaces.every((ns) => ns.includes('/tiago/'))).toBe(true);
-    expect(namespaces.some((ns) => ns.includes('/someone-else/'))).toBe(false);
+    expect(namespaces.every((ns) => ns.includes('/alice/'))).toBe(true);
+    expect(namespaces.some((ns) => ns.includes('/tiago/'))).toBe(false);
+  });
+
+  it('skips extraction when payload has no actorId', async () => {
+    const payload = makeS3Payload('session-no-actor', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, date=2026-04-16]' } },
+      { role: 'USER', content: { text: 'Working on mnemo' }, eventId: 'e1' },
+    ]);
+    delete (payload as { actorId?: string }).actorId;
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(LLM_RESPONSE_FULL));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    expect(creates).toHaveLength(0);
   });
 });

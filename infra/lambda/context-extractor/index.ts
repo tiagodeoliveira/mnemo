@@ -17,8 +17,8 @@ class ConsolidationTruncatedError extends Error {
   }
 }
 
-if (!process.env.MEMORY_ID || !process.env.ACTOR_ID) {
-  throw new Error('Missing required env vars: MEMORY_ID, ACTOR_ID');
+if (!process.env.MEMORY_ID) {
+  throw new Error('Missing required env var: MEMORY_ID');
 }
 
 const agentcore = new BedrockAgentCoreClient({});
@@ -388,7 +388,14 @@ export async function handler(event: SNSEvent): Promise<void> {
     }
 
     const { taskDomain, facts, daily } = result;
-    const actorId = process.env.ACTOR_ID!;
+    // AgentCore stamps actorId on each event and propagates it into the S3
+    // payload. Since ingest is the only writer and sets this field, trusting
+    // the payload lets a single mnemo deployment serve multiple actors.
+    const actorId = payload.actorId as string | undefined;
+    if (!actorId) {
+      console.warn(`Payload missing actorId, skipping session ${sessionId}`);
+      return;
+    }
     const memoryId = process.env.MEMORY_ID!;
 
     const date = metadata.date || deriveDate(payload);

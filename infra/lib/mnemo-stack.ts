@@ -1,13 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as kms from 'aws-cdk-lib/aws-kms';
-import * as scheduler from 'aws-cdk-lib/aws-scheduler';
-import * as sqs from 'aws-cdk-lib/aws-sqs';
 import { Construct } from 'constructs';
 import { MemoryConstruct, StackEnvironment } from './memory-construct';
 import { LambdaConstruct } from './lambda-construct';
 import { ApiConstruct } from './api-construct';
 import { ObservabilityConstruct } from './observability-construct';
+import { ActorsConstruct } from './actors-construct';
+import { DispatcherConstruct } from './dispatcher-construct';
 
 export interface MnemoStackProps extends cdk.StackProps {
   actorId: string;
@@ -69,8 +69,6 @@ export class MnemoStack extends cdk.Stack {
       logEncryptionKey,
       modelId: props.modelId,
       digestEmailFrom: props.notificationEmail,
-      digestEmailTo: props.notificationEmail,
-      digestTimezone: props.digestTimezone,
     });
 
     const api = new ApiConstruct(this, 'Api', {
@@ -79,9 +77,20 @@ export class MnemoStack extends cdk.Stack {
       logEncryptionKey,
     });
 
-    const schedulerDlq = new sqs.Queue(this, 'DigestSchedulerDLQ', {
-      retentionPeriod: cdk.Duration.days(14),
-      enforceSSL: true,
+    const actors = new ActorsConstruct(this, 'Actors', {
+      seedActor: {
+        actorId: props.actorId,
+        email: props.notificationEmail,
+        timezone: props.digestTimezone,
+      },
+    });
+
+    const dispatcher = new DispatcherConstruct(this, 'Dispatcher', {
+      actorsTable: actors.table,
+      digestFunction: lambdas.digestFunction,
+      logEncryptionKey,
+      digestSchedule: props.digestSchedule,
+      digestScheduleTimezone: props.digestTimezone,
     });
 
     new ObservabilityConstruct(this, 'Observability', {
@@ -94,31 +103,8 @@ export class MnemoStack extends cdk.Stack {
       contextExtractorLogGroup: lambdas.contextExtractorLogGroup,
       digestLogGroup: lambdas.digestLogGroup,
       api: api.api,
-      deadLetterQueues: [lambdas.contextExtractorDlq, schedulerDlq],
+      deadLetterQueues: [lambdas.contextExtractorDlq, dispatcher.digestDlq, dispatcher.schedulerDlq],
       alarmEmail: props.notificationEmail,
-    });
-
-    const schedulerRole = new iam.Role(this, 'DigestSchedulerRole', {
-      assumedBy: new iam.ServicePrincipal('scheduler.amazonaws.com'),
-    });
-    lambdas.digestFunction.grantInvoke(schedulerRole);
-    schedulerDlq.grantSendMessages(schedulerRole);
-
-    new scheduler.CfnSchedule(this, 'DigestSchedule', {
-      scheduleExpression: props.digestSchedule || 'cron(0 23 * * ? *)',
-      scheduleExpressionTimezone: props.digestTimezone || 'UTC',
-      flexibleTimeWindow: { mode: 'OFF' },
-      target: {
-        arn: lambdas.digestFunction.functionArn,
-        roleArn: schedulerRole.roleArn,
-        retryPolicy: {
-          maximumRetryAttempts: 2,
-          maximumEventAgeInSeconds: 3600,
-        },
-        deadLetterConfig: {
-          arn: schedulerDlq.queueArn,
-        },
-      },
     });
   }
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { SQSEvent } from 'aws-lambda';
 
 const agentcoreSend = vi.fn();
 const bedrockSend = vi.fn();
@@ -6,8 +7,32 @@ const sesSend = vi.fn();
 
 vi.hoisted(() => {
   process.env.MEMORY_ID = 'mem-123';
-  process.env.ACTOR_ID = 'tiago';
 });
+
+function makeSqsEvent(message: { actorId: string; email?: string; timezone?: string }): SQSEvent {
+  return {
+    Records: [
+      {
+        messageId: 'msg-1',
+        receiptHandle: 'rh-1',
+        body: JSON.stringify(message),
+        attributes: {
+          ApproximateReceiveCount: '1',
+          SentTimestamp: '0',
+          SenderId: 'x',
+          ApproximateFirstReceiveTimestamp: '0',
+        },
+        messageAttributes: {},
+        md5OfBody: '',
+        eventSource: 'aws:sqs',
+        eventSourceARN: 'arn:aws:sqs:us-east-1:123:q',
+        awsRegion: 'us-east-1',
+      },
+    ],
+  };
+}
+
+const TIAGO_EVENT = makeSqsEvent({ actorId: 'tiago', timezone: 'UTC' });
 
 vi.mock('@aws-sdk/client-bedrock-agentcore', () => ({
   BedrockAgentCoreClient: vi.fn().mockImplementation(() => ({
@@ -50,11 +75,8 @@ function mockBedrockDigest(text: string): void {
 describe('daily-digest write-then-delete ordering', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.ACTOR_ID = 'tiago';
     process.env.MEMORY_ID = 'mem-123';
-    process.env.DIGEST_TIMEZONE = 'UTC';
     delete process.env.DIGEST_EMAIL_FROM;
-    delete process.env.DIGEST_EMAIL_TO;
   });
 
   it('does not delete stale summaries when the write fails, preserving prior day', async () => {
@@ -82,7 +104,7 @@ describe('daily-digest write-then-delete ordering', () => {
 
     mockBedrockDigest('## Today\n- did work');
 
-    await expect(handler()).rejects.toThrow('ThrottlingException');
+    await expect(handler(TIAGO_EVENT)).rejects.toThrow('ThrottlingException');
 
     const deleteCalls = agentcoreSend.mock.calls.filter((args) => (args[0] as MockCmd).__cmd === 'BatchDelete');
     expect(deleteCalls).toHaveLength(0);
@@ -90,7 +112,6 @@ describe('daily-digest write-then-delete ordering', () => {
 
   it('SES email failure still writes summary to memory and does not crash', async () => {
     process.env.DIGEST_EMAIL_FROM = 'from@example.com';
-    process.env.DIGEST_EMAIL_TO = 'to@example.com';
 
     const callOrder: string[] = [];
     agentcoreSend.mockImplementation((cmd: MockCmd) => {
@@ -120,7 +141,7 @@ describe('daily-digest write-then-delete ordering', () => {
     mockBedrockDigest('## Projects\n- shipped feature X');
 
     // handler must NOT throw even though SES failed
-    await handler();
+    await handler(makeSqsEvent({ actorId: 'tiago', email: 'to@example.com', timezone: 'UTC' }));
 
     // Summary was written to memory
     expect(callOrder).toContain('BatchCreate');
@@ -137,7 +158,7 @@ describe('daily-digest write-then-delete ordering', () => {
       return Promise.resolve({});
     });
 
-    await handler();
+    await handler(TIAGO_EVENT);
 
     // No Bedrock call for digest generation
     expect(bedrockSend).not.toHaveBeenCalled();
@@ -170,7 +191,7 @@ describe('daily-digest write-then-delete ordering', () => {
     }));
     bedrockSend.mockResolvedValueOnce({ body });
 
-    await expect(handler()).rejects.toThrow('max_tokens');
+    await expect(handler(TIAGO_EVENT)).rejects.toThrow('max_tokens');
 
     const batchCalls = agentcoreSend.mock.calls.filter(
       (args) => (args[0] as MockCmd).__cmd === 'BatchCreate' || (args[0] as MockCmd).__cmd === 'BatchDelete'
@@ -187,7 +208,7 @@ describe('daily-digest write-then-delete ordering', () => {
     });
 
     // Should not throw; readLogRecords catches and returns []
-    await handler();
+    await handler(TIAGO_EVENT);
 
     // No digest generated because logs came back empty after the catch
     expect(bedrockSend).not.toHaveBeenCalled();
@@ -227,10 +248,40 @@ describe('daily-digest write-then-delete ordering', () => {
 
     mockBedrockDigest('## Today\n- did work');
 
-    await handler();
+    await handler(TIAGO_EVENT);
 
     expect(callOrder).toEqual(['BatchCreate', 'BatchDelete']);
     const deleteCall = agentcoreSend.mock.calls.find((args) => (args[0] as MockCmd).__cmd === 'BatchDelete');
     expect((deleteCall?.[0] as MockCmd | undefined)?.input.records).toEqual([{ memoryRecordId: 'old-summary-1' }]);
+  });
+
+  it('uses actorId from the SQS message to build namespaces', async () => {
+    const seenNamespaces: string[] = [];
+    agentcoreSend.mockImplementation((cmd: MockCmd) => {
+      if (cmd.__cmd === 'Retrieve' && cmd.input.namespace) {
+        seenNamespaces.push(cmd.input.namespace);
+        if (cmd.input.namespace.endsWith('/log/')) {
+          return Promise.resolve({
+            memoryRecordSummaries: [
+              { memoryRecordId: 'log-1', content: { text: 'alice worked on something' } },
+            ],
+          });
+        }
+        return Promise.resolve({ memoryRecordSummaries: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    mockBedrockDigest('## Today\n- shipped');
+
+    await handler(makeSqsEvent({ actorId: 'alice', timezone: 'UTC' }));
+
+    expect(seenNamespaces.some((n) => n.startsWith('/daily/alice/'))).toBe(true);
+    expect(seenNamespaces.every((n) => !n.startsWith('/daily/tiago/'))).toBe(true);
+  });
+
+  it('rejects SQS message missing actorId', async () => {
+    const bad = makeSqsEvent({ actorId: '' });
+    await expect(handler(bad)).rejects.toThrow(/actorId/);
   });
 });

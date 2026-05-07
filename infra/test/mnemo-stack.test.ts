@@ -17,10 +17,12 @@ describe('MnemoStack', () => {
     template.resourceCountIs('AWS::SNS::Topic', 2);
     template.resourceCountIs('AWS::S3::Bucket', 1);
     template.resourceCountIs('AWS::BedrockAgentCore::Memory', 1);
-    // 4 app lambdas + 1 observability-setup + 1 cr.Provider framework = 6.
-    // The auto-delete-objects lambda only exists when environment=dev.
+    template.resourceCountIs('AWS::DynamoDB::Table', 1);
+    // 4 app lambdas + dispatcher + observability-setup + cr.Provider framework
+    // + actor-seed custom-resource lambda = 8. The auto-delete-objects lambda
+    // only exists when environment=dev.
     template.resourcePropertiesCountIs('AWS::Lambda::Function', {
       Runtime: 'nodejs22.x',
-    }, 6);
+    }, 8);
   });
 });

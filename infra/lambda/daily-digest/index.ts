@@ -7,9 +7,10 @@ import {
 } from '@aws-sdk/client-bedrock-agentcore';
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
+import type { SQSEvent, SQSRecord } from 'aws-lambda';
 
-if (!process.env.MEMORY_ID || !process.env.ACTOR_ID) {
-  throw new Error('Missing required env vars: MEMORY_ID, ACTOR_ID');
+if (!process.env.MEMORY_ID) {
+  throw new Error('Missing required env var: MEMORY_ID');
 }
 
 const agentcore = new BedrockAgentCoreClient({});
@@ -146,7 +147,7 @@ async function generateDigest(date: string, logEntries: string[]): Promise<strin
         modelId: process.env.MODEL_ID || 'us.anthropic.claude-sonnet-4-6',
         body: JSON.stringify({
           anthropic_version: 'bedrock-2023-05-31',
-          max_tokens: 4096,
+          max_tokens: 8192,
           messages: [{ role: 'user', content: prompt }],
         }),
       })
@@ -164,6 +165,14 @@ async function generateDigest(date: string, logEntries: string[]): Promise<strin
   }
 }
 
+const AGENTCORE_RECORD_LIMIT = 16_000;
+
+function truncateToLimit(content: string): string {
+  if (content.length <= AGENTCORE_RECORD_LIMIT) return content;
+  console.warn(`Summary content (${content.length} chars) exceeds ${AGENTCORE_RECORD_LIMIT} limit, truncating`);
+  return content.slice(0, AGENTCORE_RECORD_LIMIT - 4) + '\n...';
+}
+
 async function writeSummary(memoryId: string, namespace: string, content: string): Promise<void> {
   await agentcore.send(
     new BatchCreateMemoryRecordsCommand({
@@ -172,7 +181,7 @@ async function writeSummary(memoryId: string, namespace: string, content: string
         {
           requestIdentifier: `digest-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           namespaces: [namespace],
-          content: { text: content },
+          content: { text: truncateToLimit(content) },
           timestamp: new Date(),
         },
       ],
@@ -266,28 +275,41 @@ ${htmlBody}
   );
 }
 
-export async function handler(): Promise<void> {
-  const actorId = process.env.ACTOR_ID!;
-  const memoryId = process.env.MEMORY_ID!;
-  const timezone = process.env.DIGEST_TIMEZONE || 'UTC';
-  const emailFrom = process.env.DIGEST_EMAIL_FROM;
-  const emailTo = process.env.DIGEST_EMAIL_TO;
+interface DispatchMessage {
+  actorId: string;
+  email?: string;
+  timezone?: string;
+}
 
+function parseMessage(record: SQSRecord): DispatchMessage {
+  const msg = JSON.parse(record.body) as Record<string, unknown>;
+  if (typeof msg.actorId !== 'string' || !msg.actorId) {
+    throw new Error('SQS message missing actorId');
+  }
+  return {
+    actorId: msg.actorId,
+    email: typeof msg.email === 'string' ? msg.email : undefined,
+    timezone: typeof msg.timezone === 'string' ? msg.timezone : undefined,
+  };
+}
+
+async function processActor(memoryId: string, msg: DispatchMessage, emailFrom: string | undefined): Promise<void> {
+  const timezone = msg.timezone || 'UTC';
   const date = getLocalDate(timezone);
-  const logNamespace = `/daily/${actorId}/${date}/log/`;
-  const summaryNamespace = `/daily/${actorId}/${date}/summary/`;
+  const logNamespace = `/daily/${msg.actorId}/${date}/log/`;
+  const summaryNamespace = `/daily/${msg.actorId}/${date}/summary/`;
 
   const logs = await readLogRecords(memoryId, logNamespace);
   if (logs.length === 0) {
-    console.log(`No log records found for ${date}, skipping`);
+    console.log(`No log records found for actor=${msg.actorId} date=${date}, skipping`);
     return;
   }
 
-  console.log(`Generating digest for ${date} from ${logs.length} log entries`);
+  console.log(`Generating digest for actor=${msg.actorId} date=${date} from ${logs.length} log entries`);
 
   const digest = await generateDigest(date, logs.map((r) => r.content));
   if (!digest) {
-    console.warn(`Digest generation returned empty result for ${date}`);
+    console.warn(`Digest generation returned empty result for actor=${msg.actorId} date=${date}`);
     return;
   }
 
@@ -297,15 +319,15 @@ export async function handler(): Promise<void> {
   const staleIds = await readExistingSummaryIds(memoryId, summaryNamespace);
   await writeSummary(memoryId, summaryNamespace, digest);
   await deleteSummaryIds(memoryId, staleIds);
-  console.log(`Wrote daily summary for ${date}`);
+  console.log(`Wrote daily summary for actor=${msg.actorId} date=${date}`);
 
-  if (emailFrom && emailTo) {
+  if (emailFrom && msg.email) {
     try {
-      await sendEmail(emailFrom, emailTo, date, digest);
-      console.log(`Sent digest email to ${emailTo}`);
+      await sendEmail(emailFrom, msg.email, date, digest);
+      console.log(`Sent digest email to ${msg.email}`);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`Failed to send digest email: ${message}`);
+      console.error(`Failed to send digest email to ${msg.email}: ${message}`);
     }
   }
 
@@ -321,4 +343,14 @@ export async function handler(): Promise<void> {
     Service: 'digest',
     DigestsGenerated: 1,
   }));
+}
+
+export async function handler(event: SQSEvent): Promise<void> {
+  const memoryId = process.env.MEMORY_ID!;
+  const emailFrom = process.env.DIGEST_EMAIL_FROM;
+
+  for (const record of event.Records) {
+    const msg = parseMessage(record);
+    await processActor(memoryId, msg, emailFrom);
+  }
 }
