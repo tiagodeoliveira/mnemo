@@ -288,10 +288,11 @@ This is an ABOUT memory — who the actor is as a person: background, role, expe
 
 Rules:
 - Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list.
+- Open with the person's name if it is known from the existing bio or the new observations. If no name has ever been stated, refer to them as "the actor" (lowercase, no quotes) and do NOT invent one.
 - Merge the new information with the existing bio. Drop outdated or contradicted facts — keep the most recent version.
 - Stay under ~800 words. A good bio is dense and specific.
 - Do not invent facts. Only include what the existing bio or new observations clearly establish.
-- Write in third person ("Tiago is a...") for consistency.
+- Write in third person for consistency.
 - HARD LIMIT: output must be under ${AGENTCORE_RECORD_LIMIT} characters.
 
 EXISTING BIO:
@@ -371,8 +372,15 @@ async function writeConsolidatedRecord(
 ): Promise<void> {
   const existing = await readExistingRecords(memoryId, namespace);
 
+  // For the bio namespace, always run consolidation — even on first write —
+  // so the narrative/prose shape is enforced from record zero. For project
+  // and task namespaces the extractor output is already the desired shape,
+  // so we only consolidate when merging with existing records.
+  const shouldAlwaysConsolidate = dimensionType === 'about';
+  const shouldConsolidate = existing.length > 0 || shouldAlwaysConsolidate;
+
   let finalContent = newContent;
-  if (existing.length > 0) {
+  if (shouldConsolidate) {
     const consolidated = await consolidateRecords(dimensionType, existing, newContent, metadata);
     if (consolidated) {
       finalContent = consolidated;
@@ -547,6 +555,7 @@ function buildAboutPrompt(): string {
   return `You are extracting biographical facts about the person (the "actor") who is participating in this conversation.
 
 WHAT COUNTS AS ABOUT-ME CONTENT:
+- Their name when stated ("I'm Tiago", "My name is Alice", or introduced in an email signature the user shared)
 - Who they are: role, profession, background, experience, expertise areas
 - What they're doing: active projects, responsibilities, long-running goals
 - Where they come from: career history, education, notable past work

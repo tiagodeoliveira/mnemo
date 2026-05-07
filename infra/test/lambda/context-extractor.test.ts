@@ -689,6 +689,10 @@ Discussed travel plans for Japan`;
       if (prompt.includes('biographical facts about the person')) {
         return Promise.resolve(mockLlmResponse('ABOUT:\nTiago is a principal engineer at Amazon.\nWorks on memory systems.'));
       }
+      if (prompt.includes('living biographical profile of a person')) {
+        // Consolidator reshapes into narrative prose
+        return Promise.resolve(mockLlmResponse('Tiago is a principal engineer at Amazon who works on memory systems.'));
+      }
       return Promise.resolve(mockLlmResponse(LLM_RESPONSE_NO_PROJECT));
     });
 
@@ -764,20 +768,26 @@ Discussed travel plans for Japan`;
       if (prompt.includes('biographical facts about the person')) {
         return Promise.resolve(mockLlmResponse('ABOUT:\nTiago leads the platform team.'));
       }
+      if (prompt.includes('living biographical profile of a person')) {
+        return Promise.resolve(mockLlmResponse('Tiago leads the platform team.'));
+      }
       return Promise.resolve(mockLlmResponse(LLM_RESPONSE_FULL));
     });
 
     await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
 
-    // Two extraction calls (one main, one about) both fire before any writes.
-    // We assert on the count rather than ordering since parallel scheduling
-    // is non-deterministic.
+    // Each Bedrock call is classified by the prompt it carries: main
+    // extraction, about extraction, or about consolidation (which always
+    // runs for the bio namespace to enforce narrative shape).
     const bedrockCalls = mockBedrockSend.mock.calls.map((args) => {
       const prompt = JSON.parse((args[0] as { input: { body: string } }).input.body).messages[0].content as string;
-      return prompt.includes('biographical facts about the person') ? 'about' : 'main';
+      if (prompt.includes('biographical facts about the person')) return 'about-extract';
+      if (prompt.includes('living biographical profile of a person')) return 'about-consolidate';
+      return 'main';
     });
     expect(bedrockCalls.filter((c) => c === 'main')).toHaveLength(1);
-    expect(bedrockCalls.filter((c) => c === 'about')).toHaveLength(1);
+    expect(bedrockCalls.filter((c) => c === 'about-extract')).toHaveLength(1);
+    expect(bedrockCalls.filter((c) => c === 'about-consolidate')).toHaveLength(1);
 
     // Both pipelines produced writes
     const creates = getBatchCreateCalls();
