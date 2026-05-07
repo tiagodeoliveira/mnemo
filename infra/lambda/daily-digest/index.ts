@@ -279,23 +279,33 @@ interface DispatchMessage {
   actorId: string;
   email?: string;
   timezone?: string;
+  /** Optional YYYY-MM-DD override. When absent, the date is derived from timezone. */
+  date?: string;
 }
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseMessage(record: SQSRecord): DispatchMessage {
   const msg = JSON.parse(record.body) as Record<string, unknown>;
   if (typeof msg.actorId !== 'string' || !msg.actorId) {
     throw new Error('SQS message missing actorId');
   }
+  if (msg.date !== undefined) {
+    if (typeof msg.date !== 'string' || !DATE_PATTERN.test(msg.date)) {
+      throw new Error(`SQS message date must match YYYY-MM-DD, got "${String(msg.date)}"`);
+    }
+  }
   return {
     actorId: msg.actorId,
     email: typeof msg.email === 'string' ? msg.email : undefined,
     timezone: typeof msg.timezone === 'string' ? msg.timezone : undefined,
+    date: typeof msg.date === 'string' ? msg.date : undefined,
   };
 }
 
 async function processActor(memoryId: string, msg: DispatchMessage, emailFrom: string | undefined): Promise<void> {
   const timezone = msg.timezone || 'UTC';
-  const date = getLocalDate(timezone);
+  const date = msg.date || getLocalDate(timezone);
   const logNamespace = `/daily/${msg.actorId}/${date}/log/`;
   const summaryNamespace = `/daily/${msg.actorId}/${date}/summary/`;
 

@@ -9,7 +9,7 @@ vi.hoisted(() => {
   process.env.MEMORY_ID = 'mem-123';
 });
 
-function makeSqsEvent(message: { actorId: string; email?: string; timezone?: string }): SQSEvent {
+function makeSqsEvent(message: { actorId: string; email?: string; timezone?: string; date?: string }): SQSEvent {
   return {
     Records: [
       {
@@ -283,5 +283,35 @@ describe('daily-digest write-then-delete ordering', () => {
   it('rejects SQS message missing actorId', async () => {
     const bad = makeSqsEvent({ actorId: '' });
     await expect(handler(bad)).rejects.toThrow(/actorId/);
+  });
+
+  it('uses explicit date from the SQS message to backfill a specific day', async () => {
+    const seenNamespaces: string[] = [];
+    agentcoreSend.mockImplementation((cmd: MockCmd) => {
+      if (cmd.__cmd === 'Retrieve' && cmd.input.namespace) {
+        seenNamespaces.push(cmd.input.namespace);
+        if (cmd.input.namespace.endsWith('/log/')) {
+          return Promise.resolve({
+            memoryRecordSummaries: [
+              { memoryRecordId: 'log-1', content: { text: 'backfill day' } },
+            ],
+          });
+        }
+        return Promise.resolve({ memoryRecordSummaries: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    mockBedrockDigest('## Today\n- backfilled');
+
+    await handler(makeSqsEvent({ actorId: 'tiago', timezone: 'UTC', date: '2026-05-01' }));
+
+    expect(seenNamespaces).toContain('/daily/tiago/2026-05-01/log/');
+    expect(seenNamespaces).toContain('/daily/tiago/2026-05-01/summary/');
+  });
+
+  it('rejects SQS message with invalid date format', async () => {
+    const bad = makeSqsEvent({ actorId: 'tiago', date: 'yesterday' });
+    await expect(handler(bad)).rejects.toThrow(/YYYY-MM-DD/);
   });
 });
