@@ -1,6 +1,6 @@
 # mnemo
 
-Centralized AI memory system built on Amazon Bedrock AgentCore Memory that lets any AI tool push conversation turns and recall relevant context (preferences, facts, project decisions, daily summaries) through a simple REST API, following you across sessions and workstations.
+Centralized AI memory system built on Amazon Bedrock AgentCore Memory that lets any AI tool push conversation turns and recall relevant context (preferences, facts, a living "about me" bio, project decisions, daily summaries) through a simple REST API, following you across sessions, workstations, and actors.
 
 Ships with a CLI and Claude Code hooks as the first integration, but the API is client-agnostic.
 
@@ -19,18 +19,21 @@ mnemo exposes a REST API backed by Bedrock AgentCore Memory, so clients never to
 | Preferences | built-in | `/preferences/{actorId}/` | Coding style, standards, tool preferences |
 | Facts | built-in | `/facts/{actorId}/` | General knowledge and facts |
 | Episodes | built-in | `/episodes/{actorId}/` | Structured episodes with reflections |
+| About | self-managed | `/about/{actorId}/` | Living biographical profile (name, role, background, identity) |
 | Project | self-managed | `/projects/{actorId}/{projectName}/` | Architecture decisions, tech choices, project state |
 | Task | self-managed | `/tasks/{actorId}/{taskDomain}/` | Domain-specific insights (e.g., coding, studying, meeting) |
 | Daily Log | self-managed | `/daily/{actorId}/{YYYY-MM-DD}/log/` | Append-only detailed activity entries throughout the day |
 | Daily Summary | self-managed | `/daily/{actorId}/{YYYY-MM-DD}/summary/` | Structured end-of-day digest (projects, learnings, time allocation, reflection) |
 
-Built-in strategies are extracted automatically by AgentCore. The self-managed dimensions (project, task, daily) are handled by two Lambda functions:
+Built-in strategies are extracted automatically by AgentCore. The self-managed dimensions (about, project, task, daily) are handled by the context extractor and digest Lambdas:
 
-The **context extractor** runs throughout the day, triggered by AgentCore via SNS. It reads the conversation payload from S3, uses Claude Sonnet to classify the task domain, extracts project and task facts (consolidated per namespace), and appends detailed log entries to the daily log namespace.
+The **context extractor** runs throughout the day, triggered by AgentCore via SNS. For each event it makes two Claude Sonnet calls in parallel — one that classifies the task domain and produces project/task facts plus a daily log entry, and one dedicated to biographical extraction for the About dimension. Project, task, and about records are consolidated per namespace (a distilled version that supersedes prior records); daily log entries are appended throughout the day.
 
-The **daily digest** Lambda runs on a configurable schedule (default: 23:00 in your timezone) via EventBridge Scheduler. It reads all daily log entries, generates a structured summary with sections for projects worked on, decisions, learnings, time allocation, blockers, and a reflection, then writes the summary to the daily summary namespace and optionally sends it as an email via SES.
+The **about** dimension is strictly biographical. The extraction prompt is tuned to trust user turns as first-person testimony, to trust assistant turns only when grounded in something the user supplied (e.g., "here's my resume"), and to skip project implementation details (version numbers, file paths, module names, port numbers) which belong in project memory. The consolidation prompt always runs for this dimension — even on the first write — to enforce a flowing narrative-paragraph shape rather than a bullet list.
 
-Task domain classification uses a configurable list of domains (default: `coding`, `studying`, `meeting`, `general`), while project detection relies on the git repo folder name, so sessions outside a git repo only get global memories (preferences, facts, episodes) with no project context.
+The **daily digest** Lambda runs on a per-actor schedule. A dispatcher Lambda runs on a single EventBridge schedule, scans the actors table, and emits one SQS message per digest-enabled actor. The digest Lambda consumes that queue, reading each actor's id, email, and timezone from the message, and produces a structured summary with sections for projects worked on, decisions, learnings, time allocation, blockers, and a reflection. The summary is written to the daily summary namespace and optionally emailed via SES.
+
+Task domain classification uses a configurable list of domains (default: `coding`, `studying`, `meeting`, `general`), while project detection relies on the git repo folder name, so sessions outside a git repo only get global memories (preferences, facts, episodes, about) with no project context.
 
 ### Architecture
 
@@ -73,23 +76,23 @@ cp infra/.env.example infra/.env
 Edit `infra/.env`:
 
 ```env
-# Required: your identity in the memory system
+# Required: seed actor for the actors table on first deploy
 ACTOR_ID=<your-name>
-# Optional: email for alarm notifications and daily digest
+# Optional: email for alarm notifications and the seed actor's daily digest
 NOTIFICATION_EMAIL=you@example.com
-# Optional: EventBridge cron for daily digest (default: cron(0 23 * * ? *))
+# Optional: EventBridge cron for the digest dispatcher (default: cron(0 23 * * ? *))
 DIGEST_SCHEDULE=cron(0 19 * * ? *)
-# Optional: IANA timezone for digest schedule (default: UTC)
+# Optional: IANA timezone used both for the dispatcher schedule and for the seed actor's digest date (default: UTC)
 DIGEST_TIMEZONE=America/Los_Angeles
 # Optional: 'dev' or 'production' (default: production)
 ENVIRONMENT=production
 ```
 
-`ACTOR_ID` is required and the deploy will fail without it. You can also pass values via CDK context flags (`--context actorId=<your-name>`), which take precedence over the `.env` file.
+`ACTOR_ID` is required and the deploy will fail without it. On first deploy it seeds a DynamoDB actors table with a row containing this id, the notification email, the timezone, and `digestEnabled=true`. Subsequent deploys do not overwrite that row, so you can edit, disable, or add actors without fighting the stack. The public ingest and recall Lambdas currently use this value as a hardcoded identity shim; multi-actor routing via API key or JWT is coming. The internal pipeline (context extractor, digest) already reads the actor per event/message and is ready for multiple actors. You can also pass `ACTOR_ID` via CDK context flags (`--context actorId=<your-name>`), which take precedence over the `.env` file.
 
-`NOTIFICATION_EMAIL` is used for both CloudWatch alarm notifications (via SNS, requires email confirmation after deploy) and daily digest delivery (via SES, requires a verified sender identity). The same address is used as both sender and recipient, which works in the SES sandbox since both sides are verified.
+`NOTIFICATION_EMAIL` is used for both CloudWatch alarm notifications (via SNS, requires email confirmation after deploy) and the seed actor's daily digest delivery. The seed actor's row in the actors table stores this email; the digest Lambda reads it from the SQS message at send time. Additional actors get their own email from their own row. The SES sender identity is configured once at the stack level and must be verified in SES sandbox mode.
 
-Use `DIGEST_SCHEDULE` to control when the digest runs. Examples: `cron(0 19 * * ? *)` for 7pm daily, `cron(0 19 ? * MON-FRI *)` for weekdays only.
+Use `DIGEST_SCHEDULE` to control when the dispatcher fires. It runs once per trigger and fans out one SQS message per digest-enabled actor. Examples: `cron(0 19 * * ? *)` for 7pm daily, `cron(0 19 ? * MON-FRI *)` for weekdays only.
 
 `ENVIRONMENT` controls the payload bucket's removal policy. The default `production` retains the bucket on `cdk destroy` so up to 7 days of unprocessed event payloads (the raw material for context extraction and daily digests) survive accidental teardown. Set it to `dev` for iteration — the bucket is destroyed with the stack and an auto-delete helper empties it first.
 
@@ -161,8 +164,11 @@ mnemo push \
   --turns '[{"role":"user","content":"I prefer TypeScript with strict mode"},{"role":"assistant","content":"Noted, I will use strict TypeScript."}]' \
   --project mnemo \
   --source my-tool \
-  --workdir "$(pwd)"
+  --workdir "$(pwd)" \
+  --attr owner=tiago --attr priority=high
 ```
+
+Arbitrary `--attr key=value` flags are optional and repeatable. They pass through to AgentCore event metadata (under `attr.<key>`) and are embedded in the extractor-visible context turn, ready for future attribute-based recall filtering.
 
 **Recall** memories by selecting one or more dimensions:
 
@@ -173,11 +179,14 @@ mnemo recall --daily
 # Preferences and facts
 mnemo recall --preferences --facts
 
+# Biographical profile
+mnemo recall --about
+
 # Project memories for a specific project
 mnemo recall --project mnemo
 
 # Combine dimensions freely
-mnemo recall --facts --project mnemo --task coding --date 2026-04-15
+mnemo recall --facts --about --project mnemo --task coding --date 2026-04-15
 
 # Everything at once
 mnemo recall --all
@@ -190,6 +199,7 @@ Running `mnemo recall` with no flags shows help. Each flag is opt-in and only qu
 | `--preferences` | User preferences and style |
 | `--facts` | General knowledge and facts |
 | `--episodes` | Structured episodes with reflections |
+| `--about` | Living biographical profile (name, role, background, identity) |
 | `--project <name>` | Project-specific memories (auto-detected from git if no name given) |
 | `--task <name>` | Task domain memories (e.g., coding, studying, meeting) |
 | `--date <yyyy-mm-dd>` | Daily summary or log for a specific date |
@@ -218,9 +228,9 @@ The `hook` commands handle all the heavy lifting that used to live in shell scri
 mnemo is client-agnostic. Any tool that can make HTTP calls or shell out to the CLI can push turns and recall memories. The built-in integrations all follow the same pattern:
 
 1. **Install:** `mnemo install <client>` creates `~/.mnemo/config.json` (if needed), copies hook scripts, and registers them with the client.
-2. **Session start:** The client fires a session-start hook. mnemo detects the project from git, recalls preferences, facts, project, task, and daily memories, and injects them as hidden context.
+2. **Session start:** The client fires a session-start hook. mnemo detects the project from git, recalls preferences, facts, about, project, task, and daily memories, and injects them as hidden context.
 3. **Prompt submit:** After each prompt, the client fires a prompt-submit hook. mnemo reads the transcript, extracts turns and tool activity, deduplicates against a per-session cursor (`~/.mnemo/cursors/{sessionId}.json`), and pushes only the new turns to the API. Cursors older than 2 days are pruned automatically.
-4. **Memory extraction:** AgentCore extracts preferences, facts, and episodes asynchronously. The context extractor writes project, task, and daily log entries.
+4. **Memory extraction:** AgentCore extracts preferences, facts, and episodes asynchronously. The context extractor runs a second parallel LLM pass to update the `about` biographical profile and writes project, task, and daily log entries.
 
 All hook shim scripts include a `command -v mnemo` guard so they silently no-op if the CLI is not installed on a machine. Use `--force` on any install command to re-copy hook scripts and rewrite stale entries in the client's settings file.
 
@@ -229,14 +239,23 @@ All hook shim scripts include a `command -v mnemo` guard so they silently no-op 
 Any client can use the REST API directly without the CLI:
 
 ```bash
-# Push turns
+# Push turns (with optional arbitrary attributes)
 curl -s -X POST -H "x-api-key: <key>" -H "Content-Type: application/json" \
   "https://<api-url>/v1/events" \
-  -d '{"sessionId":"s1","turns":[{"role":"user","content":"hello"}]}'
+  -d '{
+    "sessionId": "s1",
+    "turns": [{"role": "user", "content": "hello"}],
+    "context": {
+      "workstation": "laptop",
+      "workdir": "/home/user/project",
+      "timestamp": "2026-05-07T15:00:00Z",
+      "attributes": {"owner": "tiago", "priority": "high"}
+    }
+  }'
 
 # Recall specific dimensions (all are opt-in)
 curl -s -H "x-api-key: <key>" \
-  "https://<api-url>/v1/recall?preferences=true&facts=true&project=mnemo" | jq
+  "https://<api-url>/v1/recall?preferences=true&facts=true&about=true&project=mnemo" | jq
 ```
 
 | Parameter | Example | Effect |
@@ -244,11 +263,12 @@ curl -s -H "x-api-key: <key>" \
 | `preferences=true` | `?preferences=true` | Include user preferences |
 | `facts=true` | `?facts=true` | Include general facts |
 | `episodes=true` | `?episodes=true` | Include episodic memories |
+| `about=true` | `?about=true` | Include the living biographical profile |
 | `project=<name>` | `?project=mnemo` | Include project-specific memories |
 | `task=<domain>` | `?task=coding` | Include task domain memories |
 | `date=<yyyy-mm-dd>` | `?date=2026-04-15` | Include daily summary (or log fallback) |
 
-No dimensions returns an empty object (`{}`).
+`context.attributes` on ingest is an optional map of up to 32 string key/value pairs (keys `^[a-zA-Z0-9_.-]+$`, max 64 chars; values max 512 chars). They travel with the event as AgentCore metadata and are exposed to the context extractor. Attribute-based recall filtering is not yet wired through `GET /recall`. No dimensions on recall returns an empty object (`{}`).
 
 ### Claude Code
 
@@ -319,15 +339,62 @@ Any AI tool with a hook or plugin system can integrate with mnemo:
 
 The transcript parser currently supports Claude Code and Codex JSONL formats. Adding support for a new format requires implementing a turn extractor in `cli/src/transcript.ts`.
 
+## Multi-actor support
+
+A single mnemo deployment can serve multiple actors. Every piece of memory — preferences, facts, episodes, about, projects, tasks, daily logs and summaries — is namespaced by `actorId`, so two actors never see each other's records.
+
+### The actors table
+
+The stack provisions a DynamoDB table keyed by `actorId` that drives per-actor behavior:
+
+| Attribute | Purpose |
+|---|---|
+| `actorId` | Partition key. Matches the id stamped on AgentCore events. |
+| `email` | Destination for this actor's daily digest email. Optional; missing email skips SES, still writes the summary to memory. |
+| `timezone` | IANA zone used to compute the actor's local date for digest namespaces. Defaults to UTC if missing. |
+| `digestEnabled` | Boolean. `false` pauses the digest for this actor without deleting the row. |
+| `createdAt` | ISO timestamp set at seed time. Informational. |
+
+On first deploy, a custom resource seeds one row using `ACTOR_ID`, `NOTIFICATION_EMAIL`, and `DIGEST_TIMEZONE` from your `.env`. The seed is conditional (`attribute_not_exists(actorId)`), so redeploys won't overwrite edits or disable-flags you've set manually. The table is retained on `cdk destroy` so actor configuration survives stack teardown.
+
+### Adding another actor
+
+No code change or deploy needed:
+
+```bash
+aws dynamodb put-item \
+  --table-name MnemoStack-ActorsTable... \
+  --item '{
+    "actorId":       {"S": "alice"},
+    "email":         {"S": "alice@example.com"},
+    "timezone":      {"S": "America/New_York"},
+    "digestEnabled": {"BOOL": true},
+    "createdAt":     {"S": "2026-05-07T00:00:00Z"}
+  }'
+```
+
+The next dispatcher run will pick up the new row and fan out a digest SQS message for `alice` alongside the existing actors. Each actor's digest uses their own timezone for the local-date calculation and their own email for delivery.
+
+### Where actorId comes from today
+
+The **internal pipeline** (context extractor, daily digest) reads `actorId` from the event it's processing:
+
+- Context extractor reads the top-level `actorId` that AgentCore stamps onto each event payload in S3.
+- Digest reads `actorId` from the SQS message it receives from the dispatcher.
+
+Both are ready for multi-actor traffic today.
+
+The **public API** (ingest and recall) still uses `process.env.ACTOR_ID` as a hardcoded identity shim for every request. Until API-key or JWT-based actor resolution is wired through, any client pushing to `/events` or calling `/recall` will land in the seed actor's namespaces. Multi-actor extraction and digest work end-to-end; multi-actor authenticated writes are the last mile.
+
 ## Daily digest
 
-mnemo generates a structured end-of-day digest from all the activity logged throughout the day. A scheduled Lambda (EventBridge Scheduler) runs at a configurable time, reads all daily log entries, synthesizes them into a structured reflection using Claude Sonnet, writes the summary to memory, and optionally emails it to you.
+mnemo generates a structured end-of-day digest from all the activity logged throughout the day. A dispatcher Lambda runs on the configured schedule, scans the actors table for digest-enabled rows, and enqueues one SQS message per actor. The digest Lambda consumes that queue, reads the actor's id, email, and timezone from each message, synthesizes the day's log entries into a structured reflection using Claude Sonnet, writes the summary to memory, and optionally emails it.
 
 The digest includes: projects worked on, key decisions, learnings, time allocation, blockers and resolutions, and a brief reflection.
 
 ### Configuration
 
-Set these in `infra/.env` (all optional):
+Stack-level settings live in `infra/.env` and control when the dispatcher fires and who the emails come from:
 
 ```env
 NOTIFICATION_EMAIL=you@example.com
@@ -335,25 +402,35 @@ DIGEST_SCHEDULE=cron(0 19 * * ? *)
 DIGEST_TIMEZONE=America/Los_Angeles
 ```
 
-The digest Lambda always writes the summary to memory regardless of email configuration. Email delivery uses SES with the notification email as both sender and recipient. Use `DIGEST_SCHEDULE` to control timing, e.g., `cron(0 19 ? * MON-FRI *)` for weekdays only.
+`NOTIFICATION_EMAIL` is the verified SES sender identity used as the From address for every actor's digest. It is also used to seed the first actor's email (the To address). `DIGEST_SCHEDULE` controls when the dispatcher fires (e.g., `cron(0 19 ? * MON-FRI *)` for weekdays only). `DIGEST_TIMEZONE` is the zone the EventBridge schedule evaluates against, and it's also used as the seed actor's timezone. Additional actors bring their own email and timezone via the actors table.
 
-**SES verification:** SES starts in sandbox mode, which requires verifying both sender and recipient email addresses before it can deliver mail. Since mnemo uses the same address for both, you only need to verify once:
+The digest Lambda always writes the summary to memory regardless of email configuration. If an actor's row has no `email` or if SES rejects the send, the error is logged and the summary still lives in the actor's `/daily/{actorId}/{date}/summary/` namespace.
+
+**SES verification:** SES starts in sandbox mode, which requires verifying both sender and recipient email addresses before it can deliver mail. Verify your sender identity (the `NOTIFICATION_EMAIL` address) once:
 
 ```bash
 aws ses verify-email-identity --email-address you@example.com --region <your-region>
 ```
 
-Check your inbox and click the confirmation link. The digest Lambda will log an error but continue writing summaries to memory if the email is not yet verified, so nothing breaks while you wait.
+In sandbox mode you must also verify any recipient address — so every new actor's email you put in the actors table needs its own verification until you request SES production access.
 
 ### How it works
 
-1. Throughout the day, the context extractor appends detailed log entries to `/daily/{actorId}/{date}/log/`
-2. At the scheduled time, the digest Lambda reads all log entries for the day
-3. Claude Sonnet generates a structured summary
-4. The summary is written to `/daily/{actorId}/{date}/summary/`
-5. If email is configured, the digest is sent via SES
+1. Throughout the day, the context extractor appends detailed log entries to `/daily/{actorId}/{date}/log/` for each actor whose events pass through.
+2. At the scheduled time, EventBridge invokes the **dispatcher Lambda**.
+3. The dispatcher scans the actors table for rows with `digestEnabled = true` and enqueues one SQS message per actor, carrying `{actorId, email, timezone}`.
+4. The **digest Lambda** consumes the queue. For each message, it computes the actor's local date from their timezone, reads that day's log entries, generates a structured summary with Claude Sonnet, writes the summary to `/daily/{actorId}/{date}/summary/`, and sends it to the actor's email via SES if present.
+5. Failed digest runs redrive through SQS up to 3 times before landing in a DLQ.
 
-When you recall with `--date`, mnemo returns the summary if available, falling back to raw log entries mid-day before the digest has run.
+You can trigger a digest on demand — including for past dates, backfills, or a specific actor — by sending an SQS message directly to the digest queue:
+
+```bash
+aws sqs send-message \
+  --queue-url <MnemoStack-DispatcherDigestQueue-url> \
+  --message-body '{"actorId":"tiago","email":"tiago@example.com","timezone":"America/Los_Angeles","date":"2026-05-01"}'
+```
+
+The `date` field is optional; when absent, the digest uses the current local date in the provided timezone. When you recall with `--date`, mnemo returns the summary if available, falling back to raw log entries mid-day before the digest has run.
 
 ## Security and infrastructure hardening
 
@@ -362,33 +439,34 @@ The stack applies defense-in-depth across all resources:
 - **Encryption at rest:** S3 bucket uses S3-managed encryption, SNS topic uses the `aws/sns` KMS managed key, all CloudWatch Log Groups are encrypted with a shared KMS key (with automatic key rotation)
 - **Encryption in transit:** S3 bucket enforces SSL, all SQS queues enforce SSL
 - **Public access:** S3 bucket blocks all public access (`BlockPublicAccess.BLOCK_ALL`)
-- **Dead-letter queues:** Context extractor SNS subscription has an SQS DLQ (14-day retention), EventBridge Scheduler has its own SQS DLQ with retry policy (2 retries, 1hr max age)
-- **Concurrency limits:** All Lambdas have reserved concurrent executions (ingest: 10, recall: 10, context extractor: 5, digest: 2)
+- **Dead-letter queues:** Context extractor SNS subscription has an SQS DLQ (14-day retention); the digest SQS queue has its own DLQ (3 retries before landing); the dispatcher's EventBridge Scheduler has a third DLQ with retry policy (2 retries, 1hr max age)
+- **Concurrency limits:** All Lambdas have reserved concurrent executions (ingest: 10, recall: 10, context extractor: 5, digest: 2, dispatcher: 1)
 - **X-Ray tracing:** Active tracing enabled on all Lambda functions
 - **API Gateway access logging:** JSON-formatted access logs with 1-month retention
-- **Input validation:** Ingest Lambda validates Content-Type, JSON structure, max turns (200), max content length per turn (100KB), field lengths, role values, and timestamp format
+- **Input validation:** Ingest Lambda validates Content-Type, JSON structure, max turns (200), max content length per turn (100KB), field lengths, role values, timestamp format, and the optional `attributes` map (max 32 entries; keys `^[a-zA-Z0-9_.-]+$` up to 64 chars; values up to 512 chars)
 - **Prompt injection protection:** Context extractor strips newlines and caps metadata at 128 characters before including it in LLM prompts
-- **Bounded processing:** Context extractor limits array processing to 200 entries and 500KB total conversation text
-- **Cold-start validation:** All Lambdas validate required environment variables (MEMORY_ID, ACTOR_ID) at module load time
+- **Bounded processing:** Context extractor limits array processing to 200 entries and 500KB total conversation text; output records written to AgentCore are truncated to the 16K hard limit, with consolidation write-then-delete ordering so a truncated write never deletes its predecessor
+- **Cold-start validation:** Ingest and recall validate `MEMORY_ID` and `ACTOR_ID`; extractor and digest validate `MEMORY_ID` only (actorId flows through each event/message); dispatcher validates `ACTORS_TABLE` and `DIGEST_QUEUE_URL`
 - **Config file permissions:** `mnemo install` creates `~/.mnemo/config.json` with `0o600` (owner-only) permissions; `loadConfig` warns if the file is group/other-readable
 - **Resource naming:** All resource names are prefixed with the stack name to avoid conflicts in multi-deploy scenarios
 
 ## Observability
 
-The stack deploys a CloudWatch dashboard and alarm set that covers all four Lambda functions and the API Gateway.
+The stack deploys a CloudWatch dashboard and alarm set that covers the four core Lambda functions, the API Gateway, and the dead-letter queues.
 
 **Dashboard** (`mnemo`): alarm status overview, ingestion counters, digest counter, API Gateway request counts and latency (p50/p99), and per-Lambda widgets for invocations/errors, duration (p50/p99/max), and concurrent executions.
 
-**Alarms** (17 total, all wired to the `mnemo-alarms` SNS topic):
+**Alarms** (20 total, all wired to the `mnemo-alarms` SNS topic):
 
 | Alarm | Condition |
 |---|---|
 | Ingest/Recall/ContextExtractor/Digest errors | >= 3 Lambda errors in 2 consecutive 5-min periods |
 | Ingest/Recall/ContextExtractor/Digest app errors | >= 1 ERROR log entry in a single 5-min period |
 | Ingest/Recall duration P99 | >= 10s in 2 consecutive 5-min periods |
-| ContextExtractor/Digest duration P99 | >= 120s in 2 consecutive 5-min periods |
+| ContextExtractor/Digest duration P99 | >= 180s in 2 consecutive 5-min periods |
 | Ingest/Recall/ContextExtractor/Digest throttles | >= 1 throttle in a single 5-min period |
 | API Gateway 5xx | >= 5 server errors in 2 consecutive 5-min periods |
+| DLQ-0/1/2 not-empty | >= 1 message visible on each DLQ (context extractor, digest, dispatcher scheduler) |
 
 Set `NOTIFICATION_EMAIL` in `infra/.env` to receive alarm notifications via email (requires confirming the SNS subscription after deploy).
 
