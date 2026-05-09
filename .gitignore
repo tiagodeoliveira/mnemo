@@ -6,4 +6,5 @@ cdk.out/
 *.js.map
 !jest.config.js
 !vitest.config.ts
+!extension/**/*.js
 .env
