@@ -71,6 +71,21 @@ async function pushToMnemo(detail) {
   };
 
   const url = cfg.apiUrl.replace(/\/+$/, '') + '/events';
+
+  // Without a host permission for the API origin, the fetch hits CORS.
+  // Detect that up front so the popup shows a useful message.
+  try {
+    const u = new URL(url);
+    const pattern = `${u.protocol}//${u.host}/*`;
+    const granted = await chrome.permissions.contains({ origins: [pattern] });
+    if (!granted) {
+      throw new Error(`missing host permission for ${pattern} — open Options and click Save to grant`);
+    }
+  } catch (e) {
+    if (e instanceof TypeError) throw new Error(`invalid API URL: ${cfg.apiUrl}`);
+    throw e;
+  }
+
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey },
