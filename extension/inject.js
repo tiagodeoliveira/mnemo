@@ -26,6 +26,9 @@
     return null;
   })();
 
+  const LOG = (...a) => console.log('[mnemo]', ...a);
+  const WARN = (...a) => console.warn('[mnemo]', ...a);
+
   function emit(type, detail) {
     try {
       window.dispatchEvent(new CustomEvent('mnemo:' + type, { detail }));
@@ -33,6 +36,7 @@
   }
 
   // Fire a heartbeat so the service worker knows the page is alive and patched.
+  LOG('inject.js installed on', SITE, location.href);
   emit('ready', { site: SITE, href: location.href });
   setInterval(() => emit('heartbeat', { site: SITE, href: location.href }), 30_000);
 
@@ -49,9 +53,9 @@
         );
         if (m) return { kind: 'claude-completion', conversationId: m[1] };
       } else if (SITE === 'chatgpt.com') {
-        // POST /backend-api/conversation
+        // POST /backend-api/conversation; conversation_id is in the request body, not the URL.
         if (u.pathname === '/backend-api/conversation' || u.pathname === '/backend-api/f/conversation') {
-          return { kind: 'chatgpt-conversation' };
+          return { kind: 'chatgpt-conversation', conversationId: null };
         }
       }
     } catch (_) {}
@@ -74,7 +78,11 @@
       return null;
     }
     if (target.kind === 'chatgpt-conversation') {
-      // chatgpt.com sends { messages: [{ author: { role }, content: { parts: [...] } }] }
+      // chatgpt.com sends { messages: [...], conversation_id: "uuid"|null, ... }
+      // Mutate the target so the caller can use it as sessionId.
+      if (typeof parsed.conversation_id === 'string' && parsed.conversation_id) {
+        target.conversationId = parsed.conversation_id;
+      }
       const msgs = Array.isArray(parsed.messages) ? parsed.messages : [];
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i];
@@ -228,6 +236,9 @@
         sse.flush();
         const { text, parsed } = assistant.result();
         if (parsed && (userMessage || text)) {
+          LOG('captured', target.kind, 'conv=', target.conversationId,
+              'user=', (userMessage || '').length, 'chars',
+              'assistant=', text.length, 'chars');
           emit('capture', {
             site: SITE,
             kind: target.kind,
@@ -238,6 +249,7 @@
             capturedAt: new Date().toISOString(),
           });
         } else {
+          WARN('parse-error: target hit but no turns extracted', target.kind, url);
           // We saw a target API call but couldn't extract a turn pair.
           // Surfaced as "interception broken" health signal.
           emit('parse-error', {
@@ -274,6 +286,7 @@
   // Tamper detection: if something replaces window.fetch, re-patch and warn.
   setInterval(() => {
     if (window.fetch !== patchedFetch) {
+      WARN('window.fetch was replaced — re-patching');
       emit('tamper', { site: SITE, fetchToString: String(window.fetch).slice(0, 200) });
       try {
         Object.defineProperty(window, 'fetch', {

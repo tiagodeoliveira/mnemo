@@ -100,7 +100,9 @@ async function pushToMnemo(detail) {
 
 function truncate(s, n) { return s && s.length > n ? s.slice(0, n) : s; }
 function sanitizeSessionId(s) {
-  return String(s).replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 256);
+  // Bedrock AgentCore sessionId allows only [a-zA-Z0-9_-]; '.' and ':' get rejected.
+  const cleaned = String(s).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 256);
+  return cleaned || 'unknown';
 }
 function localDate(d) {
   const yyyy = d.getFullYear();
@@ -267,6 +269,13 @@ async function handleMessage(msg, sender) {
     case 'capture': {
       HEALTH.captures += 1;
       HEALTH.lastCaptureAt = Date.now();
+      console.log('[mnemo] capture', {
+        site: msg.detail && msg.detail.site,
+        kind: msg.detail && msg.detail.kind,
+        conversationId: msg.detail && msg.detail.conversationId,
+        userChars: (msg.detail && msg.detail.userMessage || '').length,
+        assistantChars: (msg.detail && msg.detail.assistantMessage || '').length,
+      });
       logEntry('info', `captured ${msg.detail && msg.detail.site} turn`, {
         site: msg.detail && msg.detail.site,
         userChars: (msg.detail && msg.detail.userMessage || '').length,
@@ -276,14 +285,17 @@ async function handleMessage(msg, sender) {
         const res = await pushToMnemo(msg.detail);
         if (res && res.ok) {
           HEALTH.lastPushOkAt = Date.now();
+          console.log('[mnemo] push ok', { sessionId: res.sessionId, turns: res.turns });
           logEntry('info', `pushed to mnemo (${res.turns} turns, session=${res.sessionId})`);
         } else if (res && res.skipped) {
+          console.warn('[mnemo] push skipped', res.skipped);
           logEntry('warn', `push skipped: ${res.skipped}`);
         }
       } catch (e) {
         HEALTH.pushFailures += 1;
         HEALTH.lastPushFailAt = Date.now();
         HEALTH.lastPushFailMessage = String(e && e.message || e);
+        console.error('[mnemo] push failed', e);
         logEntry('error', `push failed: ${HEALTH.lastPushFailMessage}`);
       }
       break;
