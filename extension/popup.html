@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mnemo capture</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 13px system-ui, sans-serif; margin: 0; padding: 12px; width: 320px; }
+      .row { display: flex; align-items: center; gap: 8px; }
+      .dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 12px; }
+      .title { font-weight: 600; font-size: 14px; }
+      .detail { color: #666; font-size: 12px; margin-top: 2px; }
+      .stats { margin-top: 10px; display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; font-size: 12px; }
+      .stats .k { color: #666; }
+      .log { margin-top: 10px; max-height: 180px; overflow: auto; border-top: 1px solid #ddd; padding-top: 8px; }
+      .log .e { font-size: 11px; line-height: 1.4; padding: 2px 0; }
+      .log .info { color: #444; }
+      .log .warn { color: #a60; }
+      .log .error { color: #b00; }
+      .log time { color: #999; margin-right: 6px; }
+      .actions { margin-top: 10px; display: flex; gap: 6px; }
+      button, a.btn { padding: 4px 10px; font: inherit; cursor: pointer; text-decoration: none;
+        border: 1px solid #888; border-radius: 4px; background: transparent; color: inherit; }
+      .empty { color: #888; font-style: italic; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <div id="dot" class="dot" style="background:#777"></div>
+      <div>
+        <div id="title" class="title">mnemo capture</div>
+        <div id="detail" class="detail">loading…</div>
+      </div>
+    </div>
+
+    <div class="stats" id="stats"></div>
+
+    <div class="actions">
+      <button id="test">Test push</button>
+      <a class="btn" id="opts" href="options.html" target="_blank">Options</a>
+    </div>
+
+    <div class="log" id="log"><div class="empty">No activity yet.</div></div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
