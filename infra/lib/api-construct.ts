@@ -34,15 +34,6 @@ export class ApiConstruct extends Construct {
         accessLogDestination: new apigw.LogGroupLogDestination(accessLogGroup),
         accessLogFormat: apigw.AccessLogFormat.jsonWithStandardFields(),
       },
-      // Browser-based clients (chrome extension, future web UI) need CORS.
-      // Preflight is a mock integration with no API key required; the real
-      // POST/GET methods still gate on `x-api-key` so this doesn't loosen auth.
-      defaultCorsPreflightOptions: {
-        allowOrigins: apigw.Cors.ALL_ORIGINS,
-        allowMethods: ['GET', 'POST', 'OPTIONS'],
-        allowHeaders: ['Content-Type', 'x-api-key'],
-        maxAge: cdk.Duration.hours(1),
-      },
     });
 
     const events = this.api.root.addResource('events');
