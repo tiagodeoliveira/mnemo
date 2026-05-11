@@ -69,7 +69,7 @@ program
   .option('--date <yyyy-mm-dd>', 'Include daily summary/log')
   .option('--daily', 'Include daily summary/log for today')
   .option('--all', 'Include all dimensions')
-  .option('--q <query>', 'Override the default per-dimension search query with a custom one')
+  .option('--q <query>', 'Rank records in each requested dimension by semantic similarity to this query (requires at least one dimension flag)')
   .option('--format <mode>', 'Output format: visible (markdown) or hook (Claude Code JSON)', '')
   .action(async (opts) => {
     try {
@@ -81,6 +81,13 @@ program
       const hasDimension = opts.preferences || opts.facts || opts.episodes || opts.about || hasProject || hasTask || hasDate || opts.all;
 
       if (!hasDimension) {
+        if (opts.q) {
+          process.stderr.write(
+            '--q ranks records within a dimension; it is not a standalone search. ' +
+            'Combine it with at least one dimension flag (e.g. `mnemo recall --preferences --q "Rust async"` or `mnemo recall --all --q "..."`).\n'
+          );
+          process.exit(2);
+        }
         program.commands.find((c) => c.name() === 'recall')!.help();
         return;
       }

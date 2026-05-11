@@ -208,7 +208,7 @@ Running `mnemo recall` with no flags shows help. Each flag is opt-in and only qu
 | `--date <yyyy-mm-dd>` | Daily summary or log for a specific date |
 | `--daily` | Daily summary or log for today |
 | `--all` | All dimensions (auto-detects project, defaults task to coding, date to today) |
-| `--q <query>` | Override the default search query across every requested dimension |
+| `--q <query>` | Rank records in each requested dimension by semantic similarity to this text. Requires at least one dimension flag. |
 
 Output format is controlled by `--format`:
 - `visible`: human-readable markdown (default when `defaults.visible` is `true` in config)
@@ -271,7 +271,7 @@ curl -s -H "x-api-key: <key>" \
 | `project=<name>` | `?project=mnemo` | Include project-specific memories |
 | `task=<domain>` | `?task=coding` | Include task domain memories |
 | `date=<yyyy-mm-dd>` | `?date=2026-04-15` | Include daily summary (or log fallback) |
-| `q=<query>` | `?q=Rust%20async%20runtimes` | Override the default per-dimension search query with a custom one (trimmed; max 1024 chars) |
+| `q=<query>` | `?q=Rust%20async%20runtimes` | Rank records in each requested dimension by semantic similarity to this text (trimmed; max 1024 chars). Does not restrict the result set. |
 
 `context.attributes` on ingest is an optional map of up to 32 string key/value pairs (keys `^[a-zA-Z0-9_.-]+$`, max 64 chars; values max 512 chars). They travel with the event as AgentCore metadata and are exposed to the context extractor. No dimensions on recall returns an empty object (`{}`).
 
@@ -280,7 +280,7 @@ curl -s -H "x-api-key: <key>" \
 Each dimension has a sensible default search query baked into the recall Lambda (e.g., preferences uses "preferences, standards, style, and workflow habits"). Pass `?q=<text>` to override that query across every requested dimension in a single call:
 
 ```bash
-# Find anything related to "Rust async runtimes" across preferences and facts
+# Rank preferences and facts by how close they are to "Rust async runtimes"
 curl -sG -H "x-api-key: <key>" \
   --data-urlencode 'preferences=true' \
   --data-urlencode 'facts=true' \
@@ -288,7 +288,9 @@ curl -sG -H "x-api-key: <key>" \
   "https://<api-url>/v1/recall"
 ```
 
-`q=` is semantic-search text forwarded to AgentCore's `searchCriteria.searchQuery`. It ranks records by similarity to the provided text — it does not restrict results the way a metadata filter would. Metadata-based filtering (e.g., "only records where `source=codex`") is not offered today: AgentCore's `BatchCreateMemoryRecords` does not accept record metadata, and record-level metadata filtering on retrieve has a closed allowlist that currently rejects arbitrary application keys. mnemo's own scoping (actor, project, task, date) is expressed via namespaces instead, so combine `q=` with the dimension flags to narrow before you search.
+**What `q=` does and doesn't do.** `q=` is the `searchQuery` input AgentCore uses to rank records for semantic similarity *within* a namespace. It **reorders** the records AgentCore returns; it does not **restrict** the result set. If a namespace has fewer than `topK` records (10), you will get the same records back regardless of what `q=` you pass — just in a different order. Think of `q=` as "most relevant first," not "only records about this topic."
+
+Metadata-based filtering (e.g., "only records where `source=codex`") is not offered today: AgentCore's `BatchCreateMemoryRecords` does not accept record metadata, and record-level metadata filtering on retrieve has a closed allowlist that currently rejects arbitrary application keys. mnemo's own scoping (actor, project, task, date) is expressed via namespaces instead, so combine `q=` with the dimension flags to narrow before you search.
 
 ### Claude Code
 
