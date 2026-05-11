@@ -68,6 +68,7 @@ program
   .option('--task <name>', 'Include task memories (e.g., coding, studying, meeting)')
   .option('--date <yyyy-mm-dd>', 'Include daily summary/log')
   .option('--daily', 'Include daily summary/log for today')
+  .option('--meeting <id>', 'Include the categorized summary for a finalized meeting')
   .option('--all', 'Include all dimensions')
   .option('--q <query>', 'Rank records in each requested dimension by semantic similarity to this query (requires at least one dimension flag)')
   .option('--format <mode>', 'Output format: visible (markdown) or hook (Claude Code JSON)', '')
@@ -78,7 +79,8 @@ program
       const hasProject = opts.project !== undefined;
       const hasTask = opts.task !== undefined;
       const hasDate = opts.date !== undefined || opts.daily;
-      const hasDimension = opts.preferences || opts.facts || opts.episodes || opts.about || hasProject || hasTask || hasDate || opts.all;
+      const hasMeeting = opts.meeting !== undefined;
+      const hasDimension = opts.preferences || opts.facts || opts.episodes || opts.about || hasProject || hasTask || hasDate || hasMeeting || opts.all;
 
       if (!hasDimension) {
         if (opts.q) {
@@ -114,6 +116,7 @@ program
         project,
         task: opts.task || (opts.all ? 'coding' : undefined),
         date,
+        meeting: opts.meeting,
         q: opts.q,
       });
 

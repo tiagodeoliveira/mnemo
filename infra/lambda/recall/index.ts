@@ -16,7 +16,7 @@ const client = new BedrockAgentCoreClient({});
 const TOP_K = 10;
 const MAX_QUERY_OVERRIDE_LENGTH = 1024;
 
-type ResponseKey = 'preferences' | 'facts' | 'episodes' | 'about' | 'project' | 'tasks' | 'daily' | 'dailyLog';
+type ResponseKey = 'preferences' | 'facts' | 'episodes' | 'about' | 'project' | 'tasks' | 'daily' | 'dailyLog' | 'meeting';
 
 interface NamespaceQuery {
   key: ResponseKey;
@@ -32,6 +32,7 @@ interface RequestedDimensions {
   project?: string;
   task?: string;
   date?: string;
+  meeting?: string;
 }
 
 function parseDimensions(params: Record<string, string | undefined>): RequestedDimensions {
@@ -43,6 +44,7 @@ function parseDimensions(params: Record<string, string | undefined>): RequestedD
     project: params.project,
     task: params.task,
     date: params.date,
+    meeting: params.meeting,
   };
 }
 
@@ -112,6 +114,15 @@ function buildQueries(actorId: string, dims: RequestedDimensions): NamespaceQuer
     });
   }
 
+  if (dims.meeting) {
+    const normalizedMeeting = sanitizeName(dims.meeting);
+    queries.push({
+      key: 'meeting',
+      namespace: `/meetings/${actorId}/${normalizedMeeting}/`,
+      searchQuery: `meeting summary, decisions, actions, open questions, highlights, and follow-ups`,
+    });
+  }
+
   return queries;
 }
 
@@ -169,7 +180,15 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
               },
             })
           )
-          .then((r: RetrieveMemoryRecordsCommandOutput) => ({ key: q.key, records: toMemoryRecords(r.memoryRecordSummaries || []) }))
+          .then((r: RetrieveMemoryRecordsCommandOutput) => {
+            let summaries = r.memoryRecordSummaries || [];
+            // Meeting recall should never surface staging chunks — those are
+            // mid-meeting transcript fragments that disappear on meeting_ended.
+            if (q.key === 'meeting') {
+              summaries = summaries.filter((s) => !(s.namespaces || []).some((n) => n.endsWith('/staging/')));
+            }
+            return { key: q.key, records: toMemoryRecords(summaries) };
+          })
       )
     );
 
@@ -188,6 +207,8 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
         if (!response.daily || response.daily.memories.length === 0) {
           response.daily = { date: dims.date, memories: result.records };
         }
+      } else if (result.key === 'meeting' && dims.meeting) {
+        response.meeting = { id: dims.meeting, memories: result.records };
       } else {
         const key = result.key as 'preferences' | 'facts' | 'episodes' | 'about';
         response[key] = result.records;

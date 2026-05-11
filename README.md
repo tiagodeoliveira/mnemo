@@ -24,12 +24,15 @@ mnemo exposes a REST API backed by Bedrock AgentCore Memory, so clients never to
 | Task | self-managed | `/tasks/{actorId}/{taskDomain}/` | Domain-specific insights (e.g., coding, studying, meeting) |
 | Daily Log | self-managed | `/daily/{actorId}/{YYYY-MM-DD}/log/` | Append-only detailed activity entries throughout the day |
 | Daily Summary | self-managed | `/daily/{actorId}/{YYYY-MM-DD}/summary/` | Structured end-of-day digest (projects, learnings, time allocation, reflection) |
+| Meeting | self-managed | `/meetings/{actorId}/{meetingId}/{category}/` | Categorized per-meeting summary (summary, decisions, actions, questions, highlights, followups), written once on `meeting_ended` |
 
-Built-in strategies are extracted automatically by AgentCore. The self-managed dimensions (about, project, task, daily) are handled by the context extractor and digest Lambdas:
+Built-in strategies are extracted automatically by AgentCore. The self-managed dimensions (about, project, task, daily, meeting) are handled by the context extractor and digest Lambdas:
 
 The **context extractor** runs throughout the day, triggered by AgentCore via SNS. For each event it makes two Claude Sonnet calls in parallel — one that classifies the task domain and produces project/task facts plus a daily log entry, and one dedicated to biographical extraction for the About dimension. Project, task, and about records are consolidated per namespace (a distilled version that supersedes prior records); daily log entries are appended throughout the day.
 
 The **about** dimension is strictly biographical. The extraction prompt is tuned to trust user turns as first-person testimony, to trust assistant turns only when grounded in something the user supplied (e.g., "here's my resume"), and to skip project implementation details (version numbers, file paths, module names, port numbers) which belong in project memory. The consolidation prompt always runs for this dimension — even on the first write — to enforce a flowing narrative-paragraph shape rather than a bullet list.
+
+The **meeting** dimension is a batch-at-end per-meeting summary. Clients mark events with `attributes.meeting_id` (and, on the last event, `attributes.meeting_ended=true`). While the meeting is in progress, each event's turns are appended to a staging sub-namespace without any LLM activity. When the closing event arrives, the extractor reads all staged chunks, concatenates them chronologically with the final event, and runs a single Sonnet call that produces six categories — summary, decisions, actions, questions, highlights, followups — each emitted as its own record under `/meetings/{actorId}/{meetingId}/{category}/`. Staging is deleted only after every category write succeeds, so a partial failure preserves the raw transcript for retry. Recall (`?meeting=<id>`) returns all category records under the meeting; staging is filtered out so mid-meeting partial transcripts are never surfaced.
 
 The **daily digest** Lambda runs on a per-actor schedule. A dispatcher Lambda runs on a single EventBridge schedule, scans the actors table, and emits one SQS message per digest-enabled actor. The digest Lambda consumes that queue, reading each actor's id, email, and timezone from the message, and produces a structured summary with sections for projects worked on, decisions, learnings, time allocation, blockers, and a reflection. The summary is written to the daily summary namespace and optionally emailed via SES.
 
@@ -182,6 +185,9 @@ mnemo recall --preferences --facts
 # Biographical profile
 mnemo recall --about
 
+# Categorized summary for a specific finalized meeting
+mnemo recall --meeting design-review-2026-05-11
+
 # Project memories for a specific project
 mnemo recall --project mnemo
 
@@ -207,6 +213,7 @@ Running `mnemo recall` with no flags shows help. Each flag is opt-in and only qu
 | `--task <name>` | Task domain memories (e.g., coding, studying, meeting) |
 | `--date <yyyy-mm-dd>` | Daily summary or log for a specific date |
 | `--daily` | Daily summary or log for today |
+| `--meeting <id>` | Categorized summary for a finalized meeting (summary, decisions, actions, questions, highlights, followups) |
 | `--all` | All dimensions (auto-detects project, defaults task to coding, date to today) |
 | `--q <query>` | Rank records in each requested dimension by semantic similarity to this text. Requires at least one dimension flag. |
 
@@ -271,6 +278,7 @@ curl -s -H "x-api-key: <key>" \
 | `project=<name>` | `?project=mnemo` | Include project-specific memories |
 | `task=<domain>` | `?task=coding` | Include task domain memories |
 | `date=<yyyy-mm-dd>` | `?date=2026-04-15` | Include daily summary (or log fallback) |
+| `meeting=<id>` | `?meeting=design-review-2026-05-11` | Include the categorized summary for a finalized meeting |
 | `q=<query>` | `?q=Rust%20async%20runtimes` | Rank records in each requested dimension by semantic similarity to this text (trimmed; max 1024 chars). Does not restrict the result set. |
 
 `context.attributes` on ingest is an optional map of up to 32 string key/value pairs (keys `^[a-zA-Z0-9_.-]+$`, max 64 chars; values max 512 chars). They travel with the event as AgentCore metadata and are exposed to the context extractor. No dimensions on recall returns an empty object (`{}`).
@@ -453,6 +461,71 @@ aws sqs send-message \
 ```
 
 The `date` field is optional; when absent, the digest uses the current local date in the provided timezone. When you recall with `--date`, mnemo returns the summary if available, falling back to raw log entries mid-day before the digest has run.
+
+## Recording a meeting
+
+A client records a meeting by tagging every ingest event with `attributes.meeting_id`. All turns across all events are staged in a per-meeting sub-namespace without any LLM activity. When the meeting ends, the client sends one final event with both `meeting_id` AND `meeting_ended=true`; that event triggers a single Sonnet call which produces the six-category summary and purges staging.
+
+### Contract
+
+- `attributes.meeting_id`: string, required on every event that belongs to the meeting. Keep it stable across chunks — it becomes the namespace segment (sanitized to lowercase).
+- `attributes.meeting_ended`: the string `"true"` on the last event of the meeting. Any other value (or absent) keeps the meeting in staging.
+- Turn content can be any shape. Speaker-labeled transcripts (`"[Speaker 1] ..."`) work well because the summarizer is told to preserve speaker attribution.
+- One event per speaker turn is fine; one event per chunk of several turns is fine; the summarizer doesn't care as long as the chronological order is preserved (AgentCore's `createdAt` is used to sort staging reads at close time).
+
+### Example
+
+```bash
+# Ongoing chunk (staging)
+curl -sS -X POST -H "x-api-key: <key>" -H "Content-Type: application/json" \
+  "https://<api-url>/v1/events" \
+  -d '{
+    "sessionId": "meeting-chunk-42",
+    "turns": [
+      {"role": "user", "content": "[Speaker 1] We should use DynamoDB for the actor lookup."},
+      {"role": "user", "content": "[Speaker 2] Agreed — and we archive to S3 Iceberg monthly."}
+    ],
+    "context": {
+      "workstation": "meeting-bot",
+      "workdir": "/",
+      "timestamp": "2026-05-11T15:30:00Z",
+      "source": "meeting-recorder",
+      "attributes": {"meeting_id": "design-review-2026-05-11"}
+    }
+  }'
+
+# Final chunk — triggers summarization
+curl -sS -X POST -H "x-api-key: <key>" -H "Content-Type: application/json" \
+  "https://<api-url>/v1/events" \
+  -d '{
+    "sessionId": "meeting-chunk-final",
+    "turns": [{"role": "user", "content": "[Speaker 1] Thanks everyone."}],
+    "context": {
+      "workstation": "meeting-bot",
+      "workdir": "/",
+      "timestamp": "2026-05-11T15:50:00Z",
+      "source": "meeting-recorder",
+      "attributes": {"meeting_id": "design-review-2026-05-11", "meeting_ended": "true"}
+    }
+  }'
+```
+
+### Categories produced
+
+| Category | Written under | What it captures |
+|---|---|---|
+| `summary` | `/meetings/{actorId}/{meetingId}/summary/` | 2-3 sentence narrative of the meeting including who attended by speaker label |
+| `decisions` | `/meetings/{actorId}/{meetingId}/decisions/` | Concrete decisions with rationale when stated |
+| `actions` | `/meetings/{actorId}/{meetingId}/actions/` | Action items in the form "[Speaker N] will do X [by Y]", explicit commitments only |
+| `questions` | `/meetings/{actorId}/{meetingId}/questions/` | Open questions raised and not resolved, attributed to a speaker |
+| `highlights` | `/meetings/{actorId}/{meetingId}/highlights/` | Up to 6 notable direct quotes worth preserving verbatim |
+| `followups` | `/meetings/{actorId}/{meetingId}/followups/` | Specific follow-up meetings, documents to produce, or people to loop in |
+
+Any category the summarizer deems empty is skipped — no placeholder record is written. The CLI and the HTTP recall merge all non-empty categories back into one text blob under `## Meeting: <id>`.
+
+### Failure handling
+
+If the LLM call fails or the record writes fail partially on `meeting_ended`, staging is **preserved** so SNS retry or a subsequent `meeting_ended` event can re-attempt the summarization. The meeting summary is only considered complete when every non-NONE category was written successfully.
 
 ## Security and infrastructure hardening
 

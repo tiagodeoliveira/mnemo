@@ -17,6 +17,7 @@ vi.mock('@aws-sdk/client-bedrock-agentcore', () => ({
   BatchCreateMemoryRecordsCommand: vi.fn().mockImplementation((input: unknown) => ({ _type: 'BatchCreate', input })),
   RetrieveMemoryRecordsCommand: vi.fn().mockImplementation((input: unknown) => ({ _type: 'Retrieve', input })),
   BatchDeleteMemoryRecordsCommand: vi.fn().mockImplementation((input: unknown) => ({ _type: 'BatchDelete', input })),
+  ListMemoryRecordsCommand: vi.fn().mockImplementation((input: unknown) => ({ _type: 'List', input })),
 }));
 
 vi.mock('@aws-sdk/client-bedrock-runtime', () => ({
@@ -793,5 +794,171 @@ Discussed travel plans for Japan`;
     const creates = getBatchCreateCalls();
     expect(creates.find((c) => c.records[0].namespaces[0] === '/about/tiago/')).toBeDefined();
     expect(creates.find((c) => c.records[0].namespaces[0] === '/projects/tiago/mnemo/')).toBeDefined();
+  });
+
+  // ---------- Meeting pipeline ----------
+
+  it('stages a meeting turn when meeting_id is set and meeting_ended is not true', async () => {
+    const meta = {
+      source: 'meeting-bot',
+      workstation: 'mac',
+      date: '2026-05-11',
+      attributes: { meeting_id: 'M123' },
+    };
+    const payload = makeS3Payload('session-meeting-mid', [
+      { role: 'OTHER', content: { text: `[mnemo-context: ${JSON.stringify(meta)}]` } },
+      { role: 'USER', content: { text: '[Speaker 1] We should use Kafka for this.' }, eventId: 'e1' },
+      { role: 'USER', content: { text: '[Speaker 2] I disagree — let\'s use Kinesis.' }, eventId: 'e2' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // Exactly one write: a staging record in the staging namespace. No LLM,
+    // no category records, no deletes.
+    expect(mockBedrockSend).not.toHaveBeenCalled();
+    const creates = getBatchCreateCalls();
+    expect(creates).toHaveLength(1);
+    // sanitizeName lowercases the meeting id
+    expect(creates[0].records[0].namespaces[0]).toBe('/meetings/tiago/m123/staging/');
+    expect(creates[0].records[0].content.text).toContain('[Speaker 1]');
+    expect(creates[0].records[0].content.text).toContain('[Speaker 2]');
+    const deletes = mockAgentCoreSend.mock.calls
+      .map((c) => c[0] as { _type?: string })
+      .filter((cmd) => cmd._type === 'BatchDelete');
+    expect(deletes).toHaveLength(0);
+  });
+
+  it('finalizes a meeting on meeting_ended=true: reads staging, writes categorized records, deletes staging', async () => {
+    const meta = {
+      source: 'meeting-bot',
+      workstation: 'mac',
+      date: '2026-05-11',
+      attributes: { meeting_id: 'M456', meeting_ended: 'true' },
+    };
+    const payload = makeS3Payload('session-meeting-end', [
+      { role: 'OTHER', content: { text: `[mnemo-context: ${JSON.stringify(meta)}]` } },
+      { role: 'USER', content: { text: '[Speaker 1] Final thought: ship it.' }, eventId: 'ef' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    const stagedChunks = [
+      { memoryRecordId: 'stage-1', content: { text: '[Speaker 1] kickoff remarks' }, createdAt: new Date('2026-05-11T10:00:00Z'), namespaces: ['/meetings/tiago/m456/staging/'] },
+      { memoryRecordId: 'stage-2', content: { text: '[Speaker 2] main discussion point' }, createdAt: new Date('2026-05-11T10:05:00Z'), namespaces: ['/meetings/tiago/m456/staging/'] },
+    ];
+
+    mockAgentCoreSend.mockImplementation((cmd: Record<string, unknown>) => {
+      if (cmd._type === 'List') {
+        return Promise.resolve({ memoryRecordSummaries: stagedChunks, nextToken: undefined });
+      }
+      if (cmd._type === 'BatchDelete') {
+        return Promise.resolve({});
+      }
+      return Promise.resolve({
+        successfulRecords: [{ memoryRecordId: 'rec-new', status: 'SUCCEEDED' }],
+        failedRecords: [],
+      });
+    });
+
+    // Meeting summarizer response with all six categories populated.
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(
+      'SUMMARY:\nA discussion about shipping.\n\n' +
+      'DECISIONS:\nShip it.\n\n' +
+      'ACTIONS:\n[Speaker 1] will publish the release notes by Friday.\n\n' +
+      'QUESTIONS:\n[Speaker 2] asked about rollback plan — unresolved.\n\n' +
+      'HIGHLIGHTS:\n"Final thought: ship it." — Speaker 1\n\n' +
+      'FOLLOWUPS:\nSchedule a post-release review next week.\n',
+    ));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // LLM called exactly once (the meeting summarizer — no about or main).
+    expect(mockBedrockSend).toHaveBeenCalledTimes(1);
+
+    // All six categories were written under /meetings/tiago/m456/<cat>/
+    const creates = getBatchCreateCalls();
+    const namespaces = creates.map((c) => c.records[0].namespaces[0]).sort();
+    expect(namespaces).toEqual([
+      '/meetings/tiago/m456/actions/',
+      '/meetings/tiago/m456/decisions/',
+      '/meetings/tiago/m456/followups/',
+      '/meetings/tiago/m456/highlights/',
+      '/meetings/tiago/m456/questions/',
+      '/meetings/tiago/m456/summary/',
+    ]);
+
+    // Staging records deleted by id
+    const deletes = mockAgentCoreSend.mock.calls
+      .map((c) => c[0] as { _type?: string; input?: { records?: Array<{ memoryRecordId: string }> } })
+      .filter((cmd) => cmd._type === 'BatchDelete');
+    expect(deletes).toHaveLength(1);
+    expect(deletes[0].input!.records!.map((r) => r.memoryRecordId).sort()).toEqual(['stage-1', 'stage-2']);
+
+    // Summarizer prompt included both staged chunks plus the final event turn
+    const summarizerPrompt = JSON.parse((mockBedrockSend.mock.calls[0][0] as { input: { body: string } }).input.body).messages[0].content as string;
+    expect(summarizerPrompt).toContain('kickoff remarks');
+    expect(summarizerPrompt).toContain('main discussion point');
+    expect(summarizerPrompt).toContain('Final thought');
+  });
+
+  it('skips category writes with NONE body', async () => {
+    const meta = {
+      source: 'meeting-bot',
+      workstation: 'mac',
+      date: '2026-05-11',
+      attributes: { meeting_id: 'M789', meeting_ended: 'true' },
+    };
+    const payload = makeS3Payload('session-meeting-none', [
+      { role: 'OTHER', content: { text: `[mnemo-context: ${JSON.stringify(meta)}]` } },
+      { role: 'USER', content: { text: '[Speaker 1] brief chat' }, eventId: 'ef' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+
+    mockAgentCoreSend.mockImplementation((cmd: Record<string, unknown>) => {
+      if (cmd._type === 'List') return Promise.resolve({ memoryRecordSummaries: [], nextToken: undefined });
+      return Promise.resolve({ successfulRecords: [{ memoryRecordId: 'rec-new', status: 'SUCCEEDED' }], failedRecords: [] });
+    });
+
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(
+      'SUMMARY:\nBrief exchange.\n\n' +
+      'DECISIONS:\nNONE\n\n' +
+      'ACTIONS:\nNONE\n\n' +
+      'QUESTIONS:\nNONE\n\n' +
+      'HIGHLIGHTS:\nNONE\n\n' +
+      'FOLLOWUPS:\nNONE\n',
+    ));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    const creates = getBatchCreateCalls();
+    expect(creates).toHaveLength(1);
+    expect(creates[0].records[0].namespaces[0]).toBe('/meetings/tiago/m789/summary/');
+  });
+
+  it('skips the meeting branch entirely when no meeting_id is present (normal extraction runs)', async () => {
+    const payload = makeS3Payload('session-no-meeting', [
+      { role: 'OTHER', content: { text: '[mnemo-context: project=mnemo, source=claude-code, date=2026-05-11]' } },
+      { role: 'USER', content: { text: 'Normal coding conversation' }, eventId: 'e1' },
+    ]);
+
+    mockS3Send.mockResolvedValue({
+      Body: { transformToString: () => Promise.resolve(JSON.stringify(payload)) },
+    });
+    mockBedrockSend.mockResolvedValue(mockLlmResponse(LLM_RESPONSE_FULL));
+
+    await handler(makeSnsEvent(makeSnsMessage('s3://bucket/payload.json')));
+
+    // Normal path: main LLM + about LLM, no meeting writes anywhere
+    const creates = getBatchCreateCalls();
+    expect(creates.some((c) => c.records[0].namespaces[0].startsWith('/meetings/'))).toBe(false);
   });
 });

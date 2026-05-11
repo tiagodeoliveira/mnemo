@@ -100,6 +100,35 @@ describe('recall lambda', () => {
     expect(body.preferences).toBeUndefined();
   });
 
+  it('queries the meeting namespace and filters out staging records', async () => {
+    // sanitizeName lowercases and slugifies, so namespaces we see on the wire
+    // use the normalized id even if the caller supplied mixed case.
+    const meetingIdInput = 'M1';
+    const normalized = 'm1';
+    mockSend.mockImplementation(() =>
+      Promise.resolve({
+        memoryRecordSummaries: [
+          { memoryRecordId: 's-1', content: { text: 'ignore me, staging' }, score: 0.9, createdAt: new Date().toISOString(), namespaces: [`/meetings/tiago/${normalized}/staging/`] },
+          { memoryRecordId: 'r-1', content: { text: 'The meeting summary.' }, score: 0.8, createdAt: new Date().toISOString(), namespaces: [`/meetings/tiago/${normalized}/summary/`] },
+          { memoryRecordId: 'r-2', content: { text: 'Ship it.' }, score: 0.7, createdAt: new Date().toISOString(), namespaces: [`/meetings/tiago/${normalized}/decisions/`] },
+        ],
+      })
+    );
+
+    const result = await handler(makeEvent({ meeting: meetingIdInput }));
+    const body = JSON.parse(result.body);
+
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const cmd = mockSend.mock.calls[0][0] as { input: { namespace: string } };
+    expect(cmd.input.namespace).toBe(`/meetings/tiago/${normalized}/`);
+    expect(body.meeting).toBeDefined();
+    // Response echoes the caller-supplied id, not the normalized namespace
+    expect(body.meeting.id).toBe(meetingIdInput);
+    // Two non-staging records kept, staging one filtered out
+    expect(body.meeting.memories).toHaveLength(2);
+    expect(body.meeting.memories.map((m: { id: string }) => m.id)).toEqual(['r-1', 'r-2']);
+  });
+
   it('queries project namespace when project passed', async () => {
     const result = await handler(makeEvent({ project: 'mnemo' }));
     const body = JSON.parse(result.body);

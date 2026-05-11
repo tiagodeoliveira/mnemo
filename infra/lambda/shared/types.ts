@@ -43,4 +43,8 @@ export interface RecallResponse {
     date: string;
     memories: MemoryRecord[];
   };
+  meeting?: {
+    id: string;
+    memories: MemoryRecord[];
+  };
 }

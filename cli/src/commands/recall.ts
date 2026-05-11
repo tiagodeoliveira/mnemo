@@ -9,6 +9,7 @@ export interface RecallOptions {
   project?: string;
   task?: string;
   date?: string;
+  meeting?: string;
   /** Optional query override used as searchQuery against every requested dimension. */
   q?: string;
 }
@@ -37,6 +38,10 @@ interface RecallResponse {
     date: string;
     memories: MemoryRecord[];
   };
+  meeting?: {
+    id: string;
+    memories: MemoryRecord[];
+  };
 }
 
 export async function executeRecall(options: RecallOptions): Promise<RecallResponse> {
@@ -45,6 +50,7 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   if (options.facts) params.set('facts', 'true');
   if (options.episodes) params.set('episodes', 'true');
   if (options.about) params.set('about', 'true');
+  if (options.meeting) params.set('meeting', options.meeting);
   if (options.q) params.set('q', options.q);
   if (options.project) params.set('project', options.project);
   if (options.task) params.set('task', options.task);
@@ -167,6 +173,13 @@ export function formatRecallOutput(response: RecallResponse, visibleOrOpts: bool
 
   if (response.daily) {
     sections.push(formatBulletSection(`Daily: ${response.daily.date}`, response.daily.memories, (c) => c));
+  }
+
+  if (response.meeting && response.meeting.memories.length > 0) {
+    // Each record is a category body (summary / decisions / actions / etc.)
+    // pre-shaped by the extractor. Render them joined under one heading.
+    const body = response.meeting.memories.map((r) => r.content).join('\n\n');
+    sections.push(`## Meeting: ${response.meeting.id}\n${body}\n`);
   }
 
   const content = sections.filter(Boolean).join('\n');

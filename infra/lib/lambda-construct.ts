@@ -50,6 +50,7 @@ export class LambdaConstruct extends Construct {
       actions: [
         'bedrock-agentcore:CreateEvent',
         'bedrock-agentcore:RetrieveMemoryRecords',
+        'bedrock-agentcore:ListMemoryRecords',
         'bedrock-agentcore:BatchCreateMemoryRecords',
         'bedrock-agentcore:BatchDeleteMemoryRecords',
       ],
