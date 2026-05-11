@@ -69,6 +69,7 @@ program
   .option('--date <yyyy-mm-dd>', 'Include daily summary/log')
   .option('--daily', 'Include daily summary/log for today')
   .option('--all', 'Include all dimensions')
+  .option('--q <query>', 'Override the default per-dimension search query with a custom one')
   .option('--format <mode>', 'Output format: visible (markdown) or hook (Claude Code JSON)', '')
   .action(async (opts) => {
     try {
@@ -106,6 +107,7 @@ program
         project,
         task: opts.task || (opts.all ? 'coding' : undefined),
         date,
+        q: opts.q,
       });
 
       const visible = opts.format === 'hook' ? false : opts.format === 'visible' ? true : config.defaults.visible;

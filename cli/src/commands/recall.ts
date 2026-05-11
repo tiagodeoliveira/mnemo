@@ -9,6 +9,8 @@ export interface RecallOptions {
   project?: string;
   task?: string;
   date?: string;
+  /** Optional query override used as searchQuery against every requested dimension. */
+  q?: string;
 }
 
 interface MemoryRecord {
@@ -43,6 +45,7 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   if (options.facts) params.set('facts', 'true');
   if (options.episodes) params.set('episodes', 'true');
   if (options.about) params.set('about', 'true');
+  if (options.q) params.set('q', options.q);
   if (options.project) params.set('project', options.project);
   if (options.task) params.set('task', options.task);
   if (options.date) params.set('date', options.date);

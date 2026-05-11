@@ -321,4 +321,48 @@ describe('recall lambda', () => {
     expect(mockSend).toHaveBeenCalledTimes(2);
     expect(body.daily.date).toBe(longDate);
   });
+
+  it('uses the per-dimension default searchQuery when no q= override is given', async () => {
+    await handler(makeEvent({ preferences: 'true' }));
+
+    const cmd = mockSend.mock.calls[0][0] as { input: { searchCriteria: { searchQuery: string } } };
+    // Default query for the preferences namespace — not the caller-supplied one
+    expect(cmd.input.searchCriteria.searchQuery).toMatch(/preferences/i);
+  });
+
+  it('overrides searchQuery on every retrieve call when q= is present', async () => {
+    await handler(
+      makeEvent({
+        preferences: 'true',
+        facts: 'true',
+        q: 'Rust and async runtimes',
+      })
+    );
+
+    expect(mockSend).toHaveBeenCalledTimes(2);
+    for (const call of mockSend.mock.calls) {
+      const cmd = call[0] as { input: { searchCriteria: { searchQuery: string } } };
+      expect(cmd.input.searchCriteria.searchQuery).toBe('Rust and async runtimes');
+    }
+  });
+
+  it('trims surrounding whitespace on q= and treats empty q= as absent', async () => {
+    await handler(makeEvent({ preferences: 'true', q: '   ' }));
+
+    const cmd = mockSend.mock.calls[0][0] as { input: { searchCriteria: { searchQuery: string } } };
+    // Falls back to the default, not "   "
+    expect(cmd.input.searchCriteria.searchQuery).toMatch(/preferences/i);
+  });
+
+  it('returns 400 when q= exceeds the length cap', async () => {
+    const result = await handler(
+      makeEvent({
+        preferences: 'true',
+        q: 'x'.repeat(1025),
+      })
+    );
+
+    expect(result.statusCode).toBe(400);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
 });

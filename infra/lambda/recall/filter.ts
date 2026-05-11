@@ -34,7 +34,13 @@ export const OPERATOR_SUFFIXES: Array<[string, Operator]> = [
   [':', OperatorType.EQUALS_TO],
 ];
 
-export const KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+// AgentCore's service-side key pattern for memory record metadata is
+// [a-zA-Z0-9\s._:/=+@-]* with max length 128 (see API_MemoryRecordLeftExpression).
+// We omit whitespace and our operator punctuation (`:`, `?`, `!`) from the
+// parser-accepted set because those are structural in the DSL, and we require
+// the key to start with a letter so leading digits/punctuation aren't confused
+// with malformed values.
+export const KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9._/=+@-]{0,127}$/;
 
 /**
  * Parse a single expression like "project:mnemo", "tags?" (EXISTS), or
@@ -60,10 +66,37 @@ export const KEY_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/;
  *   parseExpression("bad-key:x")           → throws FilterParseError
  */
 function parseExpression(raw: string): ParsedExpression {
-  // TODO(user): implement. ~10 lines. See tests in test/lambda/recall-filter.test.ts.
-  void OPERATOR_SUFFIXES;
-  void KEY_PATTERN;
-  throw new FilterParseError(`not implemented: ${raw}`);
+  const expr = raw.trim();
+  if (!expr) throw new FilterParseError(`Empty filter expression`);
+
+  // EXISTS / NOT_EXISTS: trailing `?` or `!` with no value, key is everything before.
+  const last = expr[expr.length - 1];
+  if (last === '?' || last === '!') {
+    const key = expr.slice(0, -1);
+    if (!KEY_PATTERN.test(key)) {
+      throw new FilterParseError(`Invalid filter key "${key}" in "${raw}"`);
+    }
+    return { key, operator: last === '?' ? OperatorType.EXISTS : OperatorType.NOT_EXISTS };
+  }
+
+  // EQUALS_TO and future operators: scan OPERATOR_SUFFIXES in declared order
+  // and split on the first match. Only the leftmost occurrence splits, so
+  // operator characters inside the value (e.g., "source:claude:code") survive.
+  for (const [suffix, operator] of OPERATOR_SUFFIXES) {
+    const idx = expr.indexOf(suffix);
+    if (idx === -1) continue;
+    const key = expr.slice(0, idx);
+    const value = expr.slice(idx + suffix.length);
+    if (!KEY_PATTERN.test(key)) {
+      throw new FilterParseError(`Invalid filter key "${key}" in "${raw}"`);
+    }
+    if (!value) {
+      throw new FilterParseError(`Empty filter value in "${raw}"`);
+    }
+    return { key, operator, value };
+  }
+
+  throw new FilterParseError(`Filter expression "${raw}" is missing an operator (expected ":", "?", or "!")`);
 }
 
 /**

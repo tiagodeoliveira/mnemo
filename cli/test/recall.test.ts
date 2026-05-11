@@ -75,6 +75,19 @@ describe('recall command', () => {
     expect(url).toContain('about=true');
   });
 
+  it('passes q as a URL query param when provided', async () => {
+    await executeRecall({
+      apiUrl: 'https://api.example.com/v1',
+      apiKey: 'test-key',
+      workstation: 'laptop',
+      preferences: true,
+      q: 'Rust async',
+    });
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('q=Rust');
+  });
+
   it('passes task param to /recall', async () => {
     await executeRecall({
       apiUrl: 'https://api.example.com/v1',

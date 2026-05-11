@@ -66,7 +66,27 @@ describe('parseFilter', () => {
     expect(() => parseFilter('nokey')).toThrow(FilterParseError);          // no operator
     expect(() => parseFilter(':novalue')).toThrow(FilterParseError);        // empty key
     expect(() => parseFilter('key:')).toThrow(FilterParseError);            // empty value
-    expect(() => parseFilter('bad-key:x')).toThrow(FilterParseError);       // hyphen in key
     expect(() => parseFilter('1bad:x')).toThrow(FilterParseError);          // key starts with digit
+    expect(() => parseFilter('$bad:x')).toThrow(FilterParseError);          // key starts with non-letter
+  });
+
+  it('accepts dotted, slashed, and hyphenated keys (matches AgentCore key pattern)', () => {
+    expect(parseFilter('attr.owner:tiago')).toEqual([
+      {
+        left: { metadataKey: 'attr.owner' },
+        operator: 'EQUALS_TO',
+        right: { metadataValue: { stringValue: 'tiago' } },
+      },
+    ]);
+    expect(parseFilter('a-b:x')).toEqual([
+      {
+        left: { metadataKey: 'a-b' },
+        operator: 'EQUALS_TO',
+        right: { metadataValue: { stringValue: 'x' } },
+      },
+    ]);
+    expect(parseFilter('path/segment?')).toEqual([
+      { left: { metadataKey: 'path/segment' }, operator: 'EXISTS' },
+    ]);
   });
 });
