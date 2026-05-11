@@ -168,7 +168,7 @@ mnemo push \
   --attr owner=tiago --attr priority=high
 ```
 
-Arbitrary `--attr key=value` flags are optional and repeatable. They pass through to AgentCore event metadata (under `attr.<key>`) and are embedded in the extractor-visible context turn, ready for future attribute-based recall filtering.
+Arbitrary `--attr key=value` flags are optional and repeatable. They pass through to AgentCore event metadata (under `attr.<key>`) and are embedded in the extractor-visible context turn. These attributes are not queryable on recall today — see the note under [Searching with `q=`](#searching-with-q) — but they stay on the event for future use.
 
 **Recall** memories by selecting one or more dimensions:
 
@@ -188,6 +188,9 @@ mnemo recall --project mnemo
 # Combine dimensions freely
 mnemo recall --facts --about --project mnemo --task coding --date 2026-04-15
 
+# Override the default per-dimension search query
+mnemo recall --preferences --facts --q "Rust async runtimes"
+
 # Everything at once
 mnemo recall --all
 ```
@@ -205,6 +208,7 @@ Running `mnemo recall` with no flags shows help. Each flag is opt-in and only qu
 | `--date <yyyy-mm-dd>` | Daily summary or log for a specific date |
 | `--daily` | Daily summary or log for today |
 | `--all` | All dimensions (auto-detects project, defaults task to coding, date to today) |
+| `--q <query>` | Override the default search query across every requested dimension |
 
 Output format is controlled by `--format`:
 - `visible`: human-readable markdown (default when `defaults.visible` is `true` in config)
@@ -267,8 +271,24 @@ curl -s -H "x-api-key: <key>" \
 | `project=<name>` | `?project=mnemo` | Include project-specific memories |
 | `task=<domain>` | `?task=coding` | Include task domain memories |
 | `date=<yyyy-mm-dd>` | `?date=2026-04-15` | Include daily summary (or log fallback) |
+| `q=<query>` | `?q=Rust%20async%20runtimes` | Override the default per-dimension search query with a custom one (trimmed; max 1024 chars) |
 
-`context.attributes` on ingest is an optional map of up to 32 string key/value pairs (keys `^[a-zA-Z0-9_.-]+$`, max 64 chars; values max 512 chars). They travel with the event as AgentCore metadata and are exposed to the context extractor. Attribute-based recall filtering is not yet wired through `GET /recall`. No dimensions on recall returns an empty object (`{}`).
+`context.attributes` on ingest is an optional map of up to 32 string key/value pairs (keys `^[a-zA-Z0-9_.-]+$`, max 64 chars; values max 512 chars). They travel with the event as AgentCore metadata and are exposed to the context extractor. No dimensions on recall returns an empty object (`{}`).
+
+#### Searching with `q=`
+
+Each dimension has a sensible default search query baked into the recall Lambda (e.g., preferences uses "preferences, standards, style, and workflow habits"). Pass `?q=<text>` to override that query across every requested dimension in a single call:
+
+```bash
+# Find anything related to "Rust async runtimes" across preferences and facts
+curl -sG -H "x-api-key: <key>" \
+  --data-urlencode 'preferences=true' \
+  --data-urlencode 'facts=true' \
+  --data-urlencode 'q=Rust async runtimes' \
+  "https://<api-url>/v1/recall"
+```
+
+`q=` is semantic-search text forwarded to AgentCore's `searchCriteria.searchQuery`. It ranks records by similarity to the provided text — it does not restrict results the way a metadata filter would. Metadata-based filtering (e.g., "only records where `source=codex`") is not offered today: AgentCore's `BatchCreateMemoryRecords` does not accept record metadata, and record-level metadata filtering on retrieve has a closed allowlist that currently rejects arbitrary application keys. mnemo's own scoping (actor, project, task, date) is expressed via namespaces instead, so combine `q=` with the dimension flags to narrow before you search.
 
 ### Claude Code
 

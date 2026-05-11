@@ -14,6 +14,7 @@ if (!process.env.MEMORY_ID || !process.env.ACTOR_ID) {
 
 const client = new BedrockAgentCoreClient({});
 const TOP_K = 10;
+const MAX_QUERY_OVERRIDE_LENGTH = 1024;
 
 type ResponseKey = 'preferences' | 'facts' | 'episodes' | 'about' | 'project' | 'tasks' | 'daily' | 'dailyLog';
 
@@ -132,6 +133,21 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const dims = parseDimensions(params);
     const queries = buildQueries(actorId, dims);
 
+    // Optional ?q= overrides every namespace's default searchQuery. Trimmed
+    // and length-capped so callers can't smuggle oversized prompts through.
+    const rawQ = params.q;
+    const queryOverride = typeof rawQ === 'string' ? rawQ.trim() : '';
+    if (queryOverride.length > MAX_QUERY_OVERRIDE_LENGTH) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({ error: `q exceeds maximum of ${MAX_QUERY_OVERRIDE_LENGTH} chars` }),
+        headers: { 'Content-Type': 'application/json' },
+      };
+    }
+    const effectiveQueries = queryOverride
+      ? queries.map((q) => ({ ...q, searchQuery: queryOverride }))
+      : queries;
+
     if (queries.length === 0) {
       return {
         statusCode: 200,
@@ -141,7 +157,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     const results = await Promise.all(
-      queries.map((q) =>
+      effectiveQueries.map((q) =>
         client
           .send(
             new RetrieveMemoryRecordsCommand({

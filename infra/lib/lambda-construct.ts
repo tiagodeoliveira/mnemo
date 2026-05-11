@@ -93,7 +93,10 @@ export class LambdaConstruct extends Construct {
       tracing: lambda.Tracing.ACTIVE,
       reservedConcurrentExecutions: 10,
       bundling: {
-        externalModules: ['@aws-sdk/client-bedrock-agentcore'],
+        // Bundle the SDK instead of relying on the Lambda runtime's pre-installed
+        // @aws-sdk/client-bedrock-agentcore — the runtime version lags and is
+        // missing OperatorType (needed by ./filter for metadata filter expressions).
+        nodeModules: ['@aws-sdk/client-bedrock-agentcore'],
       },
     });
     (this.recallFunction as NodejsFunction).addToRolePolicy(agentcorePolicy);
