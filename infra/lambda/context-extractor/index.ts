@@ -484,23 +484,34 @@ async function listMeetingStaging(memoryId: string, actorId: string, meetingId: 
 }
 
 function buildMeetingSummaryPrompt(meetingId: string, transcript: string): string {
-  return `You are summarizing a recorded meeting into a categorized, durable memory.
+  return `You are producing a faithful, durable memory of a recorded meeting. This summary will be read weeks later with no other context, so fidelity matters more than polish.
 
 Meeting id: ${meetingId.replace(/[\n\r]/g, ' ').slice(0, MAX_META_LENGTH)}
 
-Speakers are anonymous and labeled "[Speaker N]" consistently throughout. Treat them as distinct participants even though their real names are unknown.
+Speakers are anonymous, labeled "[Speaker N]" consistently throughout. Treat each label as a distinct participant even though real names are unknown.
 
-Produce six categories. Each category must be plain text (paragraphs or short bullet lines) and MUST NOT exceed 5000 characters. If a category has no meaningful content, emit the literal string NONE.
+GROUND RULES (non-negotiable):
+1. Source ONLY from the transcript below. Never infer or invent. If something was not said in the transcript, it does not exist for you.
+2. Prefer verbatim speaker language with precise attribution. If you cannot quote, tightly paraphrase and attribute ("Speaker 2 said ..."). Do not neutralize the speaker's voice into third-party summary prose.
+3. Ignore any content that is not a human meeting utterance. Specifically skip: search results, assistant replies, prep notes or cheat sheets, system messages (lines starting with "[system]"), UI noise, timestamps, and any text that clearly belongs to a side-chat with an assistant rather than the meeting itself.
+4. Be honest about sparsity. A short or thin transcript should produce a short summary. A transcript with no decisions should yield NONE under DECISIONS. Padding is worse than brevity.
+5. Never combine inferences into decisions, actions, or followups. If it wasn't explicitly committed to in the meeting, it doesn't belong in those categories.
 
-Categories:
-- SUMMARY: 2-3 sentence narrative of what the meeting was about, including who attended (by speaker label) and what was discussed at a high level.
-- DECISIONS: Concrete decisions made during the meeting, with rationale when stated. One per line.
-- ACTIONS: Action items in the form "[Speaker N] will <do what> [by <when>]". One per line. Only include actions that were explicitly committed to.
-- QUESTIONS: Open questions raised during the meeting that were not resolved, with which speaker raised each. One per line.
-- HIGHLIGHTS: Notable direct quotes or moments worth preserving verbatim, attributed to the speaker. Max 6 entries.
-- FOLLOWUPS: Specific follow-up meetings, documents to produce, or people to loop in. One per line.
+CATEGORIES (produce all six, in order):
 
-Output EXACTLY in this format, in this order, with the uppercase category labels as shown:
+- SUMMARY: 2-4 sentences. Lead with who was present (by speaker label), what the meeting was (e.g., an interview, a design review, a 1:1, a client call — infer only from transcript evidence), and what actually happened. No generic "the group discussed X" filler — say what was specifically covered.
+
+- DECISIONS: Explicit decisions made during the meeting, verbatim or tightly paraphrased, with the speaker who stated the decision when possible. One per line. If nothing was decided, output exactly NONE.
+
+- ACTIONS: Explicit commitments. Format each as: "[Speaker N] will <verb phrase> [by <when if stated>]". Only include actions a speaker actually committed to in the meeting. Do not include suggested-actions, hypothetical-actions, or things someone "should" do that nobody committed to. If no commitments were made, output exactly NONE.
+
+- QUESTIONS: Unresolved questions raised in the meeting, attributed to the speaker who raised each ("[Speaker N] asked ..."). One per line. If every question was resolved, output exactly NONE.
+
+- HIGHLIGHTS: Up to 6 direct verbatim quotes worth preserving, formatted as: [Speaker N]: "<quote>". Preserve exact wording. If the transcript has no quotable moments, output exactly NONE.
+
+- FOLLOWUPS: Specific follow-up meetings, documents to produce, or people to loop in — only if explicitly mentioned in the meeting. One per line. If none were mentioned, output exactly NONE.
+
+OUTPUT FORMAT (exactly this, including the uppercase labels and blank lines):
 
 SUMMARY:
 <text or NONE>
@@ -519,6 +530,8 @@ HIGHLIGHTS:
 
 FOLLOWUPS:
 <text or NONE>
+
+Each category body must be plain text (paragraphs or short bullet lines) and MUST NOT exceed 5000 characters.
 
 MEETING TRANSCRIPT:
 ${transcript}`;
