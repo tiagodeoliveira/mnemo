@@ -13,6 +13,7 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
 	"github.com/tiagodeoliveira/mnemo/server/internal/auth"
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
+	"github.com/tiagodeoliveira/mnemo/server/internal/queue"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
@@ -51,6 +52,13 @@ func main() {
 		logger.Warn("MNEMO_AUTH_DISABLED=1: bypass mode, every request maps to dev-actor")
 	}
 
+	handlers := map[store.JobKind]queue.Handler{
+		// Registered in later phases.
+	}
+	pool := queue.NewPool(s, logger, cfg.WorkerCount, handlers)
+	poolDone := make(chan struct{})
+	go func() { pool.Run(ctx); close(poolDone) }()
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: api.NewRouter(api.Deps{
@@ -77,4 +85,5 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("shutdown", "err", err)
 	}
+	<-poolDone
 }
