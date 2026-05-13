@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
+	"github.com/tiagodeoliveira/mnemo/server/internal/auth"
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
@@ -39,9 +40,25 @@ func main() {
 		os.Exit(4)
 	}
 
+	var verifier *auth.Verifier
+	if !cfg.AuthDisabled {
+		verifier, err = auth.NewVerifier(ctx, cfg.Auth0Domain, cfg.Auth0Audience)
+		if err != nil {
+			logger.Error("auth init", "err", err)
+			os.Exit(6)
+		}
+	} else {
+		logger.Warn("MNEMO_AUTH_DISABLED=1: bypass mode, every request maps to dev-actor")
+	}
+
 	srv := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           api.NewRouter(api.Deps{Store: s, Logger: logger}),
+		Addr: ":" + cfg.Port,
+		Handler: api.NewRouter(api.Deps{
+			Store:        s,
+			Logger:       logger,
+			AuthVerifier: verifier,
+			DevActorID:   "dev-actor",
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
