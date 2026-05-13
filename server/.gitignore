@@ -1,0 +1,4 @@
+/mnemo-server
+*.test
+coverage.out
+.env
