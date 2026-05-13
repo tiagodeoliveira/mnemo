@@ -7,8 +7,9 @@
       :root { color-scheme: light dark; }
       body { font: 14px system-ui, sans-serif; margin: 24px; max-width: 560px; }
       h1 { font-size: 18px; margin: 0 0 16px; }
+      h2 { font-size: 15px; margin: 20px 0 8px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
       label { display: block; margin: 12px 0 4px; font-weight: 600; }
-      input[type=text], input[type=password], input[type=url] {
+      input[type=text], input[type=url] {
         width: 100%; padding: 6px 8px; box-sizing: border-box;
         border: 1px solid #888; border-radius: 4px; font: inherit;
       }
@@ -18,17 +19,38 @@
       .status { margin-top: 16px; padding: 8px; border-radius: 4px; font-size: 13px; }
       .ok { background: #dfd; color: #060; }
       .err { background: #fdd; color: #900; }
+      #authStatus { font-weight: 600; margin-top: 4px; font-size: 13px; }
     </style>
   </head>
   <body>
     <h1>mnemo capture</h1>
 
+    <h2>API</h2>
+
     <label for="apiUrl">mnemo API base URL</label>
-    <input type="url" id="apiUrl" placeholder="https://abc123.execute-api.us-east-1.amazonaws.com/v1" />
+    <input type="url" id="apiUrl" placeholder="https://mnemo.tiago.tools" />
     <div class="hint">Path will have <code>/events</code> appended.</div>
 
-    <label for="apiKey">API key</label>
-    <input type="password" id="apiKey" placeholder="x-api-key value" />
+    <h2>Auth0</h2>
+
+    <label for="auth0Domain">Auth0 domain</label>
+    <input type="text" id="auth0Domain" value="dev-jrva0wzk3qkdxcar.us.auth0.com" />
+
+    <label for="auth0Audience">Auth0 audience</label>
+    <input type="text" id="auth0Audience" value="https://mnemo.tiago.tools" />
+
+    <label for="auth0ClientId">Auth0 client ID</label>
+    <input type="text" id="auth0ClientId" value="naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS" />
+
+    <div style="margin-top: 14px;">
+      <div id="authStatus">Checking…</div>
+      <div class="row" style="margin-top: 8px;">
+        <button id="signin">Sign in with Auth0</button>
+        <button id="signout">Sign out</button>
+      </div>
+    </div>
+
+    <h2>Capture</h2>
 
     <label for="workstation">Workstation</label>
     <input type="text" id="workstation" placeholder="chrome-extension" />
