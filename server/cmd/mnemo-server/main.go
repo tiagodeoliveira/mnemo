@@ -59,6 +59,8 @@ func main() {
 	poolDone := make(chan struct{})
 	go func() { pool.Run(ctx); close(poolDone) }()
 
+	go queue.Sweeper(ctx, s, logger, 7*24*time.Hour, time.Hour)
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: api.NewRouter(api.Deps{
