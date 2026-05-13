@@ -13,6 +13,7 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
 	"github.com/tiagodeoliveira/mnemo/server/internal/auth"
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
+	"github.com/tiagodeoliveira/mnemo/server/internal/digest"
 	"github.com/tiagodeoliveira/mnemo/server/internal/extract"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/meeting"
@@ -70,10 +71,20 @@ func main() {
 
 	extractHandler := &extract.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
 	meetingHandler := &meeting.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
+	mailer := &digest.Mailer{
+		Host: cfg.SMTPHost,
+		User: cfg.SMTPUser,
+		Pass: cfg.SMTPPass,
+		From: cfg.SMTPFrom,
+	}
+	digestHandler := &digest.Handler{
+		Store: s, LLM: llmClient, Model: cfg.LLMModel, Mailer: mailer,
+	}
 
 	handlers := map[store.JobKind]queue.Handler{
 		store.KindExtractContext:  extractHandler.Handle,
 		store.KindFinalizeMeeting: meetingHandler.Handle,
+		store.KindDailyDigest:     digestHandler.Handle,
 	}
 	pool := queue.NewPool(s, logger, cfg.WorkerCount, handlers)
 	poolDone := make(chan struct{})
