@@ -24,7 +24,8 @@ export async function executeHookSessionStart(input: HookInput): Promise<string 
 
   const response = await executeRecall({
     apiUrl: config.apiUrl,
-    apiKey: config.apiKey,
+    auth0Domain: config.auth0Domain,
+    auth0ClientId: config.auth0ClientId,
     workstation: config.workstation,
     preferences: true,
     facts: true,

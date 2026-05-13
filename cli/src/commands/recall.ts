@@ -1,6 +1,9 @@
+import { getAccessToken } from '../auth';
+
 export interface RecallOptions {
   apiUrl: string;
-  apiKey: string;
+  auth0Domain: string;
+  auth0ClientId: string;
   workstation: string;
   preferences?: boolean;
   facts?: boolean;
@@ -45,6 +48,11 @@ interface RecallResponse {
 }
 
 export async function executeRecall(options: RecallOptions): Promise<RecallResponse> {
+  const token = await getAccessToken({ domain: options.auth0Domain, clientId: options.auth0ClientId });
+  if (!token) {
+    throw new Error("Not logged in. Run 'mnemo login' first.");
+  }
+
   const params = new URLSearchParams();
   if (options.preferences) params.set('preferences', 'true');
   if (options.facts) params.set('facts', 'true');
@@ -61,7 +69,7 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
 
   const response = await fetch(url, {
     headers: {
-      'x-api-key': options.apiKey,
+      'Authorization': `Bearer ${token}`,
     },
   });
 

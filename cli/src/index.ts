@@ -7,6 +7,7 @@ import { installHooks } from './commands/install-hooks';
 import { detectProject } from './detect-project';
 import { hookPromptSubmitFromStdin } from './commands/hook-prompt-submit';
 import { hookSessionStartFromStdin } from './commands/hook-session-start';
+import { loginCmd } from './commands/login';
 import { localDate } from './date';
 
 function collectAttr(value: string, previous: Record<string, string>): Record<string, string> {
@@ -42,7 +43,8 @@ program
 
       await executePush({
         apiUrl: config.apiUrl,
-        apiKey: config.apiKey,
+        auth0Domain: config.auth0Domain,
+        auth0ClientId: config.auth0ClientId,
         sessionId: opts.session,
         turns,
         project,
@@ -107,7 +109,8 @@ program
 
       const response = await executeRecall({
         apiUrl: config.apiUrl,
-        apiKey: config.apiKey,
+        auth0Domain: config.auth0Domain,
+        auth0ClientId: config.auth0ClientId,
         workstation: config.workstation,
         preferences: wantPreferences,
         facts: wantFacts,
@@ -153,7 +156,7 @@ program
 
       if (result.configCreated) {
         console.log(`Created mnemo config at ${result.mnemoConfigPath}`);
-        console.log('Edit it with your API URL and key from the CDK deploy output.\n');
+        console.log('Run `mnemo login` to authenticate.\n');
       } else {
         console.log(`mnemo config already exists at ${result.mnemoConfigPath}\n`);
       }
@@ -222,6 +225,18 @@ hook
       await hookSessionStartFromStdin();
     } catch (err: unknown) {
       process.stderr.write(`mnemo hook session-start error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('login')
+  .description('Authenticate via Auth0 device flow')
+  .action(async () => {
+    try {
+      await loginCmd();
+    } catch (err: unknown) {
+      process.stderr.write(`mnemo login error: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     }
   });

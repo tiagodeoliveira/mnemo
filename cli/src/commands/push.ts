@@ -1,8 +1,10 @@
 import { localDate } from '../date';
+import { getAccessToken } from '../auth';
 
 export interface PushOptions {
   apiUrl: string;
-  apiKey: string;
+  auth0Domain: string;
+  auth0ClientId: string;
   sessionId: string;
   turns: Array<{ role: string; content: string }>;
   project?: string;
@@ -13,6 +15,11 @@ export interface PushOptions {
 }
 
 export async function executePush(options: PushOptions): Promise<void> {
+  const token = await getAccessToken({ domain: options.auth0Domain, clientId: options.auth0ClientId });
+  if (!token) {
+    throw new Error("Not logged in. Run 'mnemo login' first.");
+  }
+
   const now = new Date();
   const context: Record<string, unknown> = {
     workstation: options.workstation,
@@ -29,8 +36,8 @@ export async function executePush(options: PushOptions): Promise<void> {
   const response = await fetch(`${options.apiUrl}/events`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': options.apiKey,
+      'content-type': 'application/json',
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
       sessionId: options.sessionId,

@@ -124,7 +124,8 @@ export async function executeHookPromptSubmit(input: HookInput): Promise<void> {
 
   await executePush({
     apiUrl: config.apiUrl,
-    apiKey: config.apiKey,
+    auth0Domain: config.auth0Domain,
+    auth0ClientId: config.auth0ClientId,
     sessionId,
     turns: newTurns,
     project,
