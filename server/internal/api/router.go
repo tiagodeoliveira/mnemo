@@ -28,7 +28,7 @@ func NewRouter(d Deps) http.Handler {
 	authMW := auth.Middleware(d.AuthVerifier, resolver, d.DevActorID)
 	r.Group(func(r chi.Router) {
 		r.Use(authMW)
-		// /events and /recall registered here in later tasks.
+		r.Post("/events", (&eventsHandler{store: d.Store, logger: d.Logger}).ServeHTTP)
 	})
 	return r
 }
