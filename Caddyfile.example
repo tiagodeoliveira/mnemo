@@ -1,0 +1,4 @@
+{$DOMAIN}:{$PORT} {
+    tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+    reverse_proxy mnemo:8080
+}
