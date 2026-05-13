@@ -29,6 +29,7 @@ func NewRouter(d Deps) http.Handler {
 	r.Group(func(r chi.Router) {
 		r.Use(authMW)
 		r.Post("/events", (&eventsHandler{store: d.Store, logger: d.Logger}).ServeHTTP)
+		r.Get("/recall", (&recallHandler{store: d.Store, logger: d.Logger}).ServeHTTP)
 	})
 	return r
 }
