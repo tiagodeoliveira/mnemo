@@ -15,6 +15,7 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
 	"github.com/tiagodeoliveira/mnemo/server/internal/extract"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
+	"github.com/tiagodeoliveira/mnemo/server/internal/meeting"
 	"github.com/tiagodeoliveira/mnemo/server/internal/queue"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
@@ -68,9 +69,11 @@ func main() {
 	}
 
 	extractHandler := &extract.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
+	meetingHandler := &meeting.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
 
 	handlers := map[store.JobKind]queue.Handler{
-		store.KindExtractContext: extractHandler.Handle,
+		store.KindExtractContext:  extractHandler.Handle,
+		store.KindFinalizeMeeting: meetingHandler.Handle,
 	}
 	pool := queue.NewPool(s, logger, cfg.WorkerCount, handlers)
 	poolDone := make(chan struct{})
