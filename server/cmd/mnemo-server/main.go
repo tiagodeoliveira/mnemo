@@ -13,6 +13,8 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
 	"github.com/tiagodeoliveira/mnemo/server/internal/auth"
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
+	"github.com/tiagodeoliveira/mnemo/server/internal/extract"
+	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/queue"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
@@ -52,8 +54,23 @@ func main() {
 		logger.Warn("MNEMO_AUTH_DISABLED=1: bypass mode, every request maps to dev-actor")
 	}
 
+	// LLM client construction.
+	var llmClient llm.Client
+	if cfg.LLMDisabled {
+		llmClient = &llm.Stub{}
+		logger.Warn("MNEMO_LLM_DISABLED=1: using stub LLM")
+	} else {
+		if cfg.AnthropicAPIKey == "" {
+			logger.Error("ANTHROPIC_API_KEY required when MNEMO_LLM_DISABLED is not set")
+			os.Exit(7)
+		}
+		llmClient = &llm.Anthropic{APIKey: cfg.AnthropicAPIKey}
+	}
+
+	extractHandler := &extract.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
+
 	handlers := map[store.JobKind]queue.Handler{
-		// Registered in later phases.
+		store.KindExtractContext: extractHandler.Handle,
 	}
 	pool := queue.NewPool(s, logger, cfg.WorkerCount, handlers)
 	poolDone := make(chan struct{})
