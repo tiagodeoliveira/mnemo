@@ -90,6 +90,9 @@ func main() {
 	poolDone := make(chan struct{})
 	go func() { pool.Run(ctx); close(poolDone) }()
 
+	sched := &digest.Scheduler{Store: s, Logger: logger, DigestHour: 19}
+	go sched.Run(ctx)
+
 	go queue.Sweeper(ctx, s, logger, 7*24*time.Hour, time.Hour)
 
 	srv := &http.Server{
