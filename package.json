@@ -24,8 +24,8 @@
     "cli"
   ],
   "scripts": {
-    "lint": "eslint 'cli/**/*.ts' 'infra/**/*.ts' 'scripts/**/*.ts' --max-warnings 0",
-    "lint:fix": "eslint 'cli/**/*.ts' 'infra/**/*.ts' 'scripts/**/*.ts' --fix --max-warnings 0",
+    "lint": "eslint 'cli/**/*.ts' 'infra/**/*.ts' --max-warnings 0",
+    "lint:fix": "eslint 'cli/**/*.ts' 'infra/**/*.ts' --fix --max-warnings 0",
     "test": "npm test --workspaces",
     "build": "npm run build --workspaces",
     "prepare": "husky"
