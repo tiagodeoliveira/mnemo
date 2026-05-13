@@ -11,26 +11,23 @@ import (
 	"time"
 
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
+	"github.com/tiagodeoliveira/mnemo/server/internal/config"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
-	dsn := os.Getenv("DATABASE_URL")
-	if dsn == "" {
-		logger.Error("DATABASE_URL is required")
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("config", "err", err)
 		os.Exit(2)
-	}
-	port := os.Getenv("MNEMO_PORT")
-	if port == "" {
-		port = "8080"
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	s, err := store.Open(ctx, dsn)
+	s, err := store.Open(ctx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Error("store.Open", "err", err)
 		os.Exit(3)
@@ -43,7 +40,7 @@ func main() {
 	}
 
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              ":" + cfg.Port,
 		Handler:           api.NewRouter(api.Deps{Store: s, Logger: logger}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
