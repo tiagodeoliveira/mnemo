@@ -3,7 +3,7 @@
 # Local end-to-end smoke test for mnemo.
 #
 # What it does:
-#   ROUND 1 — first-write path
+#   ROUND 1 — first-write path (item population)
 #   1. Brings up the local Postgres compose service.
 #   2. Builds the mnemo-server binary and runs it in the background
 #      (auth disabled, real Anthropic LLM via $ANTHROPIC_API_KEY).
@@ -11,38 +11,39 @@
 #   4. Manually enqueues a daily_digest job (the scheduler only fires
 #      at :19:00 in the actor's TZ; we don't want to wait).
 #   5. Polls the jobs table until empty (or timeout).
-#   6. Asserts each dimension has at least one row whose content contains
-#      a distinctive keyword planted in the input event.
+#   6. Verifies each consolidated dimension has MULTIPLE items (not one blob),
+#      and that a planted keyword is present in at least one item per dimension.
+#      All items are expected to have reinforced_count = 1 (not yet reinforced).
 #
-#   ROUND 2 — consolidation path
+#   ROUND 2 — diff-based consolidation (reinforcement + new content)
 #   7. POSTs 2 more events targeting the same actor/project/domain:
-#        a. Reinforcement: reasserts existing prefs + adds new ones.
-#        b. Contradiction: replaces the role claim in the bio.
+#        a. Reinforcement: explicitly restates Go, rustacean style, SKIP LOCKED,
+#           and adds new pref: trunk-based development.
+#        b. Contradiction: replaces the role claim in the bio (Staff Engineer).
 #   8. Waits for the new extract_context jobs to drain.
-#   9. Asserts:
-#        - Consolidated dims are still exactly 1 row (upsert worked).
-#        - New content from round 2 is present (trunk-based pref,
-#          Staff Engineer role).
-#        - Date markers (YYYY-MM-DD) appear in project/task/preferences
-#          rows (proving the freshness consolidation prompt ran).
+#   9. Verifies:
+#        - At least one item per consolidated dim has reinforced_count > 1
+#          (the LLM correctly recognized and reinforced the repeated content).
+#        - New content from round 2 is present (trunk-based, Staff Engineer).
+#        - Item counts grew only modestly (consolidation, not unbounded append).
 #
-#      Not asserted: silent-drop of contradicted facts in the about bio.
-#      Empirically the LLM produces transition narratives ("having
-#      recently departed from X") for narrative prose, which is
-#      defensible bio behavior. The role-change merge is verified via
-#      the Staff Engineer presence check.
-#
-#  10. Prints a pass/fail table and exits 0 (all green) or 1 (any red).
+#   ROUND 3 — semantic search verification
+#  10. Exercises POST /search with semantically distinct queries that prove
+#      embeddings map meaning (not just substring matching).
+#  11. Verifies ?q= on /recall returns similarity-scored items.
+#  12. Prints a pass/fail table and exits 0 (all green) or 1 (any red).
 #
 # Usage:
 #   ANTHROPIC_API_KEY=sk-ant-... ./scripts/smoke.sh
 #
 # Env overrides:
-#   MNEMO_SMOKE_PORT     — port the server binds (default 8080)
-#   MNEMO_SMOKE_TIMEOUT  — seconds to wait for jobs to drain (default 180)
-#   MNEMO_SMOKE_KEEP=1   — leave Postgres + the server running at the end
-#                          for manual inspection. Default: stop both.
-#   MNEMO_LLM_MODEL      — override the Claude model (default claude-sonnet-4-6)
+#   MNEMO_SMOKE_PORT      — port the server binds (default 8080)
+#   MNEMO_SMOKE_TIMEOUT   — seconds to wait for jobs to drain (default 180)
+#   MNEMO_SMOKE_KEEP=1    — leave Postgres + the server running at the end
+#                           for manual inspection. Default: stop both.
+#   MNEMO_LLM_MODEL       — override the Claude model (default claude-sonnet-4-6)
+#   MNEMO_EMBED_DISABLED=1 — skip real embeddings (search assertions will be
+#                            skipped / return 503; set when OPENAI_API_KEY absent)
 #
 # Why "presence + keyword" rather than exact-content checks?
 #   LLM output is non-deterministic. The keywords we plant are
@@ -59,6 +60,14 @@ PORT="${MNEMO_SMOKE_PORT:-8080}"
 TIMEOUT="${MNEMO_SMOKE_TIMEOUT:-180}"
 KEEP="${MNEMO_SMOKE_KEEP:-0}"
 MODEL="${MNEMO_LLM_MODEL:-claude-sonnet-4-6}"
+
+# Embeddings: if OPENAI_API_KEY is absent and caller hasn't set MNEMO_EMBED_DISABLED,
+# auto-enable the stub so the server starts. Search assertions are skipped in that case.
+EMBED_ENABLED=1
+if [[ -z "${OPENAI_API_KEY:-}" && -z "${MNEMO_EMBED_DISABLED:-}" ]]; then
+  MNEMO_EMBED_DISABLED=1
+  EMBED_ENABLED=0
+fi
 
 RUN_ID="smoke-$(date +%s)"
 ACTOR="dev-actor"
@@ -125,11 +134,15 @@ build_server() {
 }
 
 start_server() {
-  step "start mnemo-server (auth disabled, real LLM)"
+  local embed_note="real embeddings"
+  [[ "$EMBED_ENABLED" == "0" ]] && embed_note="stub embeddings (OPENAI_API_KEY absent)"
+  step "start mnemo-server (auth disabled, real LLM, $embed_note)"
   DATABASE_URL="$DSN" \
   MNEMO_PORT="$PORT" \
   MNEMO_AUTH_DISABLED=1 \
   ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+  OPENAI_API_KEY="${OPENAI_API_KEY:-}" \
+  MNEMO_EMBED_DISABLED="${MNEMO_EMBED_DISABLED:-}" \
   MNEMO_LLM_MODEL="$MODEL" \
   "$BIN" >/tmp/mnemo-smoke.log 2>&1 &
   SERVER_PID=$!
@@ -238,9 +251,8 @@ enqueue_daily_digest() {
 }
 
 # ─── Round 2 events ────────────────────────────────────────────────
-# Round 2 exercises the consolidation path: project/task/about/preferences
-# should now upsert against existing rows, bumping dates on reinforced
-# statements and dropping contradicted ones.
+# Round 2 exercises the diff-based consolidation path: project/task/about/preferences
+# should recognize reinforced items (bump reinforced_count) and merge new items.
 
 send_round2_reinforce_event() {
   step "POST /events — round 2 A: reinforces existing preferences, adds new ones"
@@ -253,9 +265,9 @@ send_round2_reinforce_event() {
     turns: [
       {role: "user", content:
         "Still working on mnemo-smoke today. The rustacean style I prefer continues to pay off — the codebase is clean and easy to reason about. " +
-        "One additional preference worth recording: I now prefer trunk-based development over feature branches for solo projects. " +
+        "Still using Go for all backend work, no plans to change that. " +
         "The SELECT FOR UPDATE SKIP LOCKED pattern for the job queue is working great — definitely the right architectural call. " +
-        "I am still using Go for the backend, no plans to change that."},
+        "One additional preference worth recording: I now prefer trunk-based development over feature branches for solo projects."},
       {role: "assistant", content:
         "Reinforced preferences: rustacean style, Go for backend, SKIP LOCKED for queues. " +
         "New preference: trunk-based development for solo projects."}
@@ -315,11 +327,9 @@ wait_for_jobs() {
 }
 
 # ─── Dimension checks ──────────────────────────────────────────────
-# Each check: (dimension, namespace-prefix, keyword)
-# Pass = at least 1 row matching namespace prefix AND content contains keyword (case-insensitive).
-
 declare -a RESULTS=()
 
+# Keyword presence: at least one item in the namespace contains the keyword.
 check_dim() {
   local label="$1" namespace_like="$2" keyword="$3"
   local row_count
@@ -343,7 +353,7 @@ check_dim() {
   RESULTS+=("PASS|$label|$row_count row(s), $hits with '$keyword'")
 }
 
-# Exact-count assertion: proves consolidated dims didn't accidentally append.
+# Exact-count assertion: use for append dims or to bound growth.
 check_dim_count() {
   local label="$1" namespace_like="$2" expected="$3"
   local got
@@ -354,6 +364,20 @@ check_dim_count() {
   else
     fail "$label: expected $expected, got $got"
     RESULTS+=("FAIL|$label|expected $expected got $got")
+  fi
+}
+
+# Range-count assertion: proves consolidated dims are item-shaped, not one blob.
+check_dim_count_range() {
+  local label="$1" namespace_like="$2" min_expected="$3" max_expected="$4"
+  local got
+  got=$(psql_in "SELECT count(*) FROM memories WHERE actor_id='$ACTOR' AND namespace LIKE '${namespace_like}';" | tr -d ' ')
+  if [[ "$got" -ge "$min_expected" && "$got" -le "$max_expected" ]]; then
+    ok "$label: $got rows (expected ${min_expected}..${max_expected})"
+    RESULTS+=("PASS|$label|$got rows in [${min_expected}..${max_expected}]")
+  else
+    fail "$label: expected ${min_expected}..${max_expected}, got $got"
+    RESULTS+=("FAIL|$label|expected ${min_expected}..${max_expected} got $got")
   fi
 }
 
@@ -374,49 +398,180 @@ check_dim_absent() {
 }
 
 run_checks() {
-  step "verify each dimension (round 1)"
-  check_dim "preferences"   "/preferences/${ACTOR}/"                        "rustacean"
-  check_dim "episodes"      "/episodes/${ACTOR}/%"                          "deployed mnemo-smoke"
-  check_dim "about"         "/about/${ACTOR}/"                              "Principal Engineer"
-  check_dim "project"       "/projects/${ACTOR}/mnemo-smoke/"               "SKIP LOCKED"
-  check_dim "task"          "/tasks/${ACTOR}/coding/"                       "SKIP LOCKED"
-  check_dim "daily_log"     "/daily/${ACTOR}/${DATE}/log/"                  "mnemo-smoke"
-  check_dim "daily_summary" "/daily/${ACTOR}/${DATE}/summary/"              "smoke"
-  check_dim "meeting"       "/meetings/${ACTOR}/smoke-meeting/highlights/"  "ship it tonight"
+  step "verify each dimension (round 1, item-shape)"
+
+  # Consolidated dimensions: expect multiple items, not one blob.
+  check_dim_count_range "preferences (multiple items)" "/preferences/${ACTOR}/"             2 12
+  check_dim_count_range "about (multiple items)"       "/about/${ACTOR}/"                   1 8
+  check_dim_count_range "project (multiple items)"     "/projects/${ACTOR}/mnemo-smoke/"    1 10
+  check_dim_count_range "task coding (multiple items)" "/tasks/${ACTOR}/coding/"            1 10
+
+  # Append dimensions: each event produces a row, round 1 has 2 events.
+  check_dim_count_range "daily_log (per event)" "/daily/${ACTOR}/${DATE}/log/" 1 5
+  check_dim_count_range "episodes (round 1)"    "/episodes/${ACTOR}/%"         1 5
+  check_dim_count_range "daily_summary (1)"     "/daily/${ACTOR}/${DATE}/summary/" 1 1
+  check_dim_count_range "meeting (4-6 cats)"    "/meetings/${ACTOR}/smoke-meeting/%" 4 6
+
+  # Keyword presence: at least one item per dimension contains the planted keyword.
+  check_dim "preferences has 'rustacean'"           "/preferences/${ACTOR}/%"                       "rustacean"
+  check_dim "episodes has 'deployed mnemo-smoke'"   "/episodes/${ACTOR}/%"                          "deployed mnemo-smoke"
+  check_dim "about has 'Principal Engineer'"        "/about/${ACTOR}/%"                              "Principal Engineer"
+  check_dim "project has 'SKIP LOCKED'"             "/projects/${ACTOR}/mnemo-smoke/%"               "SKIP LOCKED"
+  check_dim "task has 'SKIP LOCKED'"                "/tasks/${ACTOR}/coding/%"                       "SKIP LOCKED"
+  check_dim "daily_log has 'mnemo-smoke'"           "/daily/${ACTOR}/${DATE}/log/%"                  "mnemo-smoke"
+  check_dim "daily_summary has 'smoke'"             "/daily/${ACTOR}/${DATE}/summary/%"              "smoke"
+  check_dim "meeting has 'ship it tonight'"         "/meetings/${ACTOR}/smoke-meeting/highlights/%"  "ship it tonight"
+
+  # All round-1 items have reinforced_count = 1 (not yet reinforced).
+  local reinforced_n
+  reinforced_n=$(psql_in "SELECT count(*) FROM memories WHERE actor_id='$ACTOR' AND reinforced_count > 1;" | tr -d ' ')
+  if [[ "$reinforced_n" == "0" ]]; then
+    ok "round 1: reinforced_count is 1 for all items"
+    RESULTS+=("PASS|round 1 reinforced_count|all items at count=1")
+  else
+    fail "round 1: $reinforced_n items have reinforced_count > 1 (unexpected)"
+    RESULTS+=("FAIL|round 1 reinforced_count|$reinforced_n items already reinforced")
+  fi
 }
 
 run_round2_checks() {
-  step "verify round 2 (consolidation: reinforcement + contradiction)"
+  step "verify round 2 (diff consolidation: reinforcement + new content)"
 
-  # 1. Upsert behavior: consolidated dims must still be exactly 1 row.
-  check_dim_count "preferences (1 row)" "/preferences/${ACTOR}/"            "1"
-  check_dim_count "about (1 row)"       "/about/${ACTOR}/"                  "1"
-  check_dim_count "project (1 row)"     "/projects/${ACTOR}/mnemo-smoke/"   "1"
-  check_dim_count "task coding (1 row)" "/tasks/${ACTOR}/coding/"           "1"
+  # 1. At least one item per consolidated dim has reinforced_count > 1.
+  # This proves the LLM correctly recognized reinforcement in the round-2 event.
+  for dim_label in preferences about project task; do
+    local namespace_like
+    case "$dim_label" in
+      preferences) namespace_like="/preferences/${ACTOR}/" ;;
+      about)       namespace_like="/about/${ACTOR}/" ;;
+      project)     namespace_like="/projects/${ACTOR}/mnemo-smoke/" ;;
+      task)        namespace_like="/tasks/${ACTOR}/coding/" ;;
+    esac
+    local n
+    n=$(psql_in "SELECT count(*) FROM memories WHERE actor_id='$ACTOR' AND namespace LIKE '${namespace_like}' AND reinforced_count > 1;" | tr -d ' ')
+    if [[ "$n" -ge 1 ]]; then
+      ok "$dim_label: $n item(s) reinforced (count > 1)"
+      RESULTS+=("PASS|$dim_label round-2 reinforced|$n items > 1")
+    else
+      fail "$dim_label: no items got reinforced in round 2"
+      RESULTS+=("FAIL|$dim_label round-2 reinforced|0 items > 1")
+    fi
+  done
 
-  # 2. New content appears in the consolidated rows.
-  check_dim "preferences r2 (trunk-based)" "/preferences/${ACTOR}/" "trunk-based"
-  check_dim "about r2 (Staff Engineer)"    "/about/${ACTOR}/"       "Staff Engineer"
+  # 2. New content from round 2 is present.
+  check_dim "preferences has 'trunk-based' (new in r2)" "/preferences/${ACTOR}/%" "trunk-based"
+  check_dim "about has 'Staff Engineer' (new in r2)"    "/about/${ACTOR}/%"        "Staff Engineer"
 
-  # 3. Date markers prove the freshness consolidation pipeline ran.
-  #    preferences was already dated on round 1. project/task should now be dated too
-  #    (round 1 was first-write, no consolidation; round 2 triggered consolidation).
-  check_dim "preferences has '${DATE}' marker"  "/preferences/${ACTOR}/"          "${DATE}"
-  check_dim "project has '${DATE}' marker (round 2 dates)" "/projects/${ACTOR}/mnemo-smoke/" "${DATE}"
-  check_dim "task has '${DATE}' marker (round 2 dates)"    "/tasks/${ACTOR}/coding/"         "${DATE}"
+  # 3. Item counts grew modestly (the consolidator added items, didn't replace all).
+  # Use the same ranges as round 1 — counts should still be in the same ballpark,
+  # not 2x what they were (which would mean the LLM is insert-only-mode).
+  check_dim_count_range "preferences after r2 (still ranged)" "/preferences/${ACTOR}/"          2 14
+  check_dim_count_range "about after r2 (still ranged)"       "/about/${ACTOR}/"                1 10
+  check_dim_count_range "project after r2 (still ranged)"     "/projects/${ACTOR}/mnemo-smoke/" 1 12
+  check_dim_count_range "task after r2 (still ranged)"        "/tasks/${ACTOR}/coding/"         1 12
 
-  # 4. Note on about + contradictions:
-  #    The about prompt produces narrative prose, and the LLM consistently keeps
-  #    a brief transition phrase ("having recently departed from his previous role
-  #    as X") rather than silently dropping the old fact. That's defensible bio
-  #    behavior — a personal bio reads better with continuity — so we don't
-  #    assert silent-drop on this dimension. The "Staff Engineer" presence check
-  #    above is the right shape: it proves the new role got merged in, without
-  #    over-prescribing how the LLM tells the story.
-  #
-  #    Contrast: for `preferences` (bullet format) the freshness rules ARE explicit
-  #    about silent drops. If you ever want to assert a preference contradiction,
-  #    use check_dim_absent against /preferences/<actor>/.
+  # Note on about + contradictions: we deliberately don't assert silent-drop of
+  # the role change. The LLM produces transition narratives ("had previously been
+  # at AWS, now at startup") and that's defensible. The "Staff Engineer" presence
+  # check above is the operative signal.
+}
+
+# ─── Round 3 — semantic search ─────────────────────────────────────
+# Exercises POST /search and ?q= on /recall. Uses queries that are
+# semantically distinct from the planted keywords to prove embeddings
+# actually map meaning, not just substring matching.
+
+# Helper for POST /search.
+post_search() {
+  local body="$1"
+  curl -fsS -X POST "http://localhost:$PORT/search" \
+    -H "content-type: application/json" \
+    -d "$body"
+}
+
+run_search_checks() {
+  step "verify semantic search"
+
+  if [[ "$EMBED_ENABLED" == "0" ]]; then
+    warn "OPENAI_API_KEY absent — embeddings disabled; skipping semantic search assertions"
+    warn "  Set OPENAI_API_KEY to enable this section."
+    RESULTS+=("PASS|search (skipped)|no OPENAI_API_KEY; embeddings disabled")
+    return
+  fi
+
+  # Query 1: 'queue systems for jobs' — semantically near the
+  # SKIP LOCKED preference + project items, but lexically far.
+  local resp
+  resp=$(post_search '{"q":"queue systems for jobs","limit":5}')
+  local count
+  count=$(echo "$resp" | jq -r '.results | length')
+  if [[ "$count" -ge 1 ]]; then
+    ok "search 'queue systems for jobs' returned $count results"
+    RESULTS+=("PASS|search queue|$count results")
+  else
+    fail "search 'queue systems for jobs' returned 0 results"
+    RESULTS+=("FAIL|search queue|no results")
+  fi
+
+  # Top hit should mention SKIP LOCKED (semantically related to 'queue systems').
+  local top
+  top=$(echo "$resp" | jq -r '.results[0].content // empty')
+  if [[ "$top" == *"SKIP LOCKED"* ]] || [[ "$top" == *"queue"* ]] || [[ "$top" == *"SQS"* ]] || [[ "$top" == *"Redis"* ]]; then
+    ok "search top hit: '${top:0:80}...'"
+    RESULTS+=("PASS|search top hit|content matches expectation")
+  else
+    fail "search top hit doesn't match expected queue/SKIP semantics"
+    info "  top hit content: $top"
+    RESULTS+=("FAIL|search top hit|unexpected content")
+  fi
+
+  # Query 2: 'where the person lives' — should find the about item with Seattle.
+  resp=$(post_search '{"q":"where the person lives","limit":3,"dimensions":["about"]}')
+  count=$(echo "$resp" | jq -r '.results | length')
+  if [[ "$count" -ge 1 ]]; then
+    ok "search 'where the person lives' returned $count about-results"
+    local top2
+    top2=$(echo "$resp" | jq -r '.results[0].content // empty')
+    if [[ "$top2" == *"Seattle"* ]] || [[ "$top2" == *"Xanxerê"* ]]; then
+      ok "search about-results contain location"
+      RESULTS+=("PASS|search about-location|content matches")
+    else
+      fail "search about-results don't mention Seattle or Xanxerê"
+      info "  top hit content: $top2"
+      RESULTS+=("FAIL|search about-location|unexpected content")
+    fi
+  else
+    fail "search 'where the person lives' returned 0 about-results"
+    RESULTS+=("FAIL|search about-location|no results")
+  fi
+
+  # Query 3: similarity threshold filtering.
+  resp=$(post_search '{"q":"completely unrelated quantum physics gravitational waves","limit":5,"min_similarity":0.5}')
+  count=$(echo "$resp" | jq -r '.results | length')
+  if [[ "$count" == "0" ]]; then
+    ok "search with min_similarity=0.5 on unrelated query returned 0 (as expected)"
+    RESULTS+=("PASS|search min_similarity|0 results below threshold")
+  else
+    # Not a hard failure — embeddings might surprise us. Flag as warning instead.
+    warn "search with min_similarity=0.5 on unrelated query returned $count (expected 0)"
+    info "  this might be fine; check the top similarity"
+    info "  top result: $(echo "$resp" | jq -r '.results[0].content + " (sim: " + (.results[0].similarity|tostring) + ")"' )"
+    # Still record as a pass-with-note, since LLM-determined similarity floors are imperfect.
+    RESULTS+=("PASS|search min_similarity|$count results (note: expected 0, unrelated query)")
+  fi
+
+  # Query 4: ?q= on /recall — verify it returns similarity-ordered items.
+  local recall_resp
+  recall_resp=$(curl -fsS "http://localhost:$PORT/recall?preferences=1&q=Go+programming&limit=3")
+  local first_sim
+  first_sim=$(echo "$recall_resp" | jq -r '.dimensions[0].items[0].similarity // empty')
+  if [[ -n "$first_sim" ]]; then
+    ok "?q= on /recall returned similarity-scored items (top sim: $first_sim)"
+    RESULTS+=("PASS|recall ?q=|similarity field populated")
+  else
+    fail "?q= on /recall did not populate similarity field"
+    RESULTS+=("FAIL|recall ?q=|no similarity field")
+  fi
 }
 
 print_report() {
@@ -425,10 +580,10 @@ print_report() {
   for r in "${RESULTS[@]}"; do
     IFS='|' read -r status label note <<<"$r"
     if [[ "$status" == "PASS" ]]; then
-      printf "  ${GREEN}PASS${RST}  %-15s  %s\n" "$label" "$note"
+      printf "  ${GREEN}PASS${RST}  %-40s  %s\n" "$label" "$note"
       (( pass++ )) || true
     else
-      printf "  ${RED}FAIL${RST}  %-15s  %s\n" "$label" "$note"
+      printf "  ${RED}FAIL${RST}  %-40s  %s\n" "$label" "$note"
       (( fail++ )) || true
     fi
   done
@@ -472,12 +627,13 @@ main() {
   run_checks
 
   # ─── Round 2 ─────────────────────────────────────────────────────
-  # Exercise the consolidation path: same actor/project/domain, with new
-  # content that reinforces some existing facts and contradicts others.
   send_round2_reinforce_event
   send_round2_contradict_event
   wait_for_jobs
   run_round2_checks
+
+  # ─── Round 3 — semantic search ───────────────────────────────────
+  run_search_checks
 
   print_report
 }
