@@ -1,7 +1,7 @@
 import { loadConfig } from '../config';
 import { detectProject } from '../detect-project';
 import * as log from '../log';
-import { executeRecall, formatRecallOutput } from './recall';
+import { executeRecall, formatRecallForHook } from './recall';
 import { readStdin } from '../stdin';
 import { localDate } from '../date';
 
@@ -34,9 +34,17 @@ export async function executeHookSessionStart(input: HookInput): Promise<string 
     date: today,
   });
 
-  const output = formatRecallOutput(response, { visible: false });
-  log.info(`session-start: recall complete (${output ? output.length : 0} chars)`);
-  return output || undefined;
+  const context = formatRecallForHook(response);
+  log.info(`session-start: recall complete (${context ? context.length : 0} chars)`);
+
+  if (!context) return undefined;
+
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      additionalContext: `[mnemo context]\n${context}`,
+    },
+  });
 }
 
 export async function hookSessionStartFromStdin(): Promise<void> {

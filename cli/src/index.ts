@@ -2,13 +2,13 @@
 import { Command } from 'commander';
 import { loadConfig } from './config';
 import { executePush } from './commands/push';
-import { executeRecall, formatRecallOutput } from './commands/recall';
+import { recallCmd } from './commands/recall';
+import { searchCmd } from './commands/search';
 import { installHooks } from './commands/install-hooks';
 import { detectProject } from './detect-project';
 import { hookPromptSubmitFromStdin } from './commands/hook-prompt-submit';
 import { hookSessionStartFromStdin } from './commands/hook-session-start';
 import { loginCmd } from './commands/login';
-import { localDate } from './date';
 
 function collectAttr(value: string, previous: Record<string, string>): Record<string, string> {
   const idx = value.indexOf('=');
@@ -71,60 +71,51 @@ program
   .option('--daily', 'Include daily summary/log for today')
   .option('--meeting <id>', 'Include the categorized summary for a finalized meeting')
   .option('--all', 'Include all dimensions')
-  .option('--q <query>', 'Rank records in each requested dimension by semantic similarity to this query (requires at least one dimension flag)')
-  .option('--format <mode>', 'Output format: visible (markdown) or hook (Claude Code JSON)', '')
+  .option('--q <query>', 'Rank records in each requested dimension by semantic similarity to this query')
+  .option('--tags <csv>', 'Filter by tags (comma-separated)')
+  .option('--tag-mode <mode>', 'Tag match mode: any (default) or all')
+  .option('--since <date>', 'Include items updated at or after date (YYYY-MM-DD)')
+  .option('--until <date>', 'Include items updated at or before date (YYYY-MM-DD)')
+  .option('--limit <n>', 'Max items per dimension (default 50, max 200)', parseInt)
+  .option('--min-similarity <n>', 'Minimum similarity threshold 0..1 (only with --q)', parseFloat)
+  .option('--format <fmt>', 'Output format: text (default) or json')
   .action(async (opts) => {
     try {
-      const config = loadConfig();
-
-      const hasProject = opts.project !== undefined;
-      const hasTask = opts.task !== undefined;
-      const hasDate = opts.date !== undefined || opts.daily;
-      const hasMeeting = opts.meeting !== undefined;
-      const hasDimension = opts.preferences || opts.episodes || opts.about || hasProject || hasTask || hasDate || hasMeeting || opts.all;
-
-      if (!hasDimension) {
-        if (opts.q) {
-          process.stderr.write(
-            '--q ranks records within a dimension; it is not a standalone search. ' +
-            'Combine it with at least one dimension flag (e.g. `mnemo recall --preferences --q "Rust async"` or `mnemo recall --all --q "..."`).\n'
-          );
-          process.exit(2);
-        }
-        program.commands.find((c) => c.name() === 'recall')!.help();
-        return;
-      }
-
-      const project = hasProject
-        ? (typeof opts.project === 'string' ? opts.project : detectProject())
-        : opts.all ? detectProject() : undefined;
-
-      const date = opts.date || (opts.daily || opts.all ? localDate() : undefined);
-
-      const wantPreferences = opts.all || opts.preferences;
-      const wantEpisodes = opts.all || opts.episodes;
-      const wantAbout = opts.all || opts.about;
-
-      const response = await executeRecall({
-        apiUrl: config.apiUrl,
-        auth0Domain: config.auth0Domain,
-        auth0ClientId: config.auth0ClientId,
-        workstation: config.workstation,
-        preferences: wantPreferences,
-        episodes: wantEpisodes,
-        about: wantAbout,
-        project,
-        task: opts.task || (opts.all ? 'coding' : undefined),
-        date,
-        meeting: opts.meeting,
-        q: opts.q,
-      });
-
-      const visible = opts.format === 'hook' ? false : opts.format === 'visible' ? true : config.defaults.visible;
-      const output = formatRecallOutput(response, { visible });
-      if (output) process.stdout.write(output + '\n');
+      await recallCmd(opts);
     } catch (err: unknown) {
       process.stderr.write(`mnemo recall error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('search <query>')
+  .description('Semantic search across all memories')
+  .option('--dimension <name...>', 'Limit to specific dimensions (repeatable)')
+  .option('--tags <csv>', 'Filter by tags (comma-separated)')
+  .option('--tag-mode <mode>', 'Tag match mode: any (default) or all')
+  .option('--namespace-prefix <prefix>', 'Limit to namespaces starting with prefix')
+  .option('--since <date>', 'Items updated at or after date (YYYY-MM-DD)')
+  .option('--until <date>', 'Items updated at or before date (YYYY-MM-DD)')
+  .option('--limit <n>', 'Max results (default 10)', parseInt)
+  .option('--min-similarity <n>', 'Filter below threshold (0..1)', parseFloat)
+  .option('--format <fmt>', 'Output format: text (default) or json')
+  .action(async (query, options) => {
+    try {
+      await searchCmd({
+        q: query,
+        dimensions: options.dimension,
+        tags: options.tags?.split(','),
+        tagMode: options.tagMode as 'any' | 'all',
+        namespacePrefix: options.namespacePrefix,
+        since: options.since,
+        until: options.until,
+        limit: options.limit ?? 10,
+        minSimilarity: options.minSimilarity,
+        format: options.format ?? 'text',
+      });
+    } catch (err: unknown) {
+      process.stderr.write(`mnemo search error: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     }
   });

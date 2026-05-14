@@ -24,15 +24,18 @@ type recallHandler struct {
 
 type dimGroup struct {
 	Dimension string       `json:"dimension"`
+	Namespace string       `json:"namespace"`
 	Items     []recallItem `json:"items"`
 }
+
 type recallItem struct {
-	ID         string          `json:"id"`
-	Namespace  string          `json:"namespace"`
-	Content    string          `json:"content"`
-	Attributes json.RawMessage `json:"attributes"`
-	UpdatedAt  time.Time       `json:"updated_at"`
-	Similarity float32         `json:"similarity,omitempty"`
+	ID              string    `json:"id"`
+	Content         string    `json:"content"`
+	Tags            []string  `json:"tags"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	ReinforcedCount int       `json:"reinforced_count"`
+	Similarity      float32   `json:"similarity,omitempty"`
 }
 
 type dimReq struct {
@@ -44,13 +47,6 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	actor := auth.ActorID(ctx)
 	q := r.URL.Query()
-
-	attrFilters := map[string]string{}
-	for k, v := range q {
-		if strings.HasPrefix(k, "attr.") && len(v) > 0 {
-			attrFilters[strings.TrimPrefix(k, "attr.")] = v[0]
-		}
-	}
 
 	var reqs []dimReq
 	if q.Get("preferences") != "" {
@@ -86,10 +82,24 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(reqs) == 0 {
-		w.WriteHeader(http.StatusOK)
 		w.Header().Set("content-type", "application/json")
 		_, _ = w.Write([]byte("{\"dimensions\":[]}"))
 		return
+	}
+
+	// Parse optional tag and time filters shared by both paths.
+	var tags, tagsAll []string
+	if tv := q.Get("tags"); tv != "" {
+		tags = strings.Split(tv, ",")
+	}
+	if tm := q.Get("tag_mode"); tm == "all" && len(tags) > 0 {
+		tagsAll = tags
+		tags = nil
+	}
+	since, until := parseTimeRange(q.Get("since"), q.Get("until"))
+	limit := 0
+	if lv := q.Get("limit"); lv != "" {
+		fmt.Sscanf(lv, "%d", &limit)
 	}
 
 	// Check if semantic search is requested via ?q=
@@ -106,8 +116,14 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			mems, err := h.store.QueryByPrefix(ctx, store.RecallFilter{
-				ActorID: actor, NamespacePref: rq.prefix, AttrFilters: attrFilters,
+			mems, err := h.store.ListItems(ctx, store.ListItemsOpts{
+				ActorID:         actor,
+				NamespacePrefix: rq.prefix,
+				Tags:            tags,
+				TagsAll:         tagsAll,
+				Since:           since,
+				Until:           until,
+				Limit:           limit,
 			})
 			if err != nil {
 				h.logger.Warn("recall", "dim", rq.dim, "err", err)
@@ -115,19 +131,21 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			items := make([]recallItem, len(mems))
 			for j, m := range mems {
-				items[j] = recallItem{ID: m.ID.String(), Namespace: m.Namespace, Content: m.Content, Attributes: m.Attributes, UpdatedAt: m.UpdatedAt}
+				items[j] = recallItem{
+					ID:              m.ID.String(),
+					Content:         m.Content,
+					Tags:            m.Tags,
+					CreatedAt:       m.CreatedAt,
+					UpdatedAt:       m.UpdatedAt,
+					ReinforcedCount: m.ReinforcedCount,
+				}
 			}
-			results[i] = dimGroup{Dimension: rq.dim, Items: items}
+			results[i] = dimGroup{Dimension: rq.dim, Namespace: rq.prefix, Items: items}
 		}()
 	}
 	wg.Wait()
 
-	visible := q.Get("visible") != "false"
 	w.Header().Set("content-type", "application/json")
-	if visible {
-		_, _ = w.Write([]byte(renderMarkdown(results)))
-		return
-	}
 	_ = json.NewEncoder(w).Encode(map[string]any{"dimensions": results})
 }
 
@@ -185,14 +203,16 @@ func (h *recallHandler) serveSemanticRecall(
 			items := make([]recallItem, len(hits))
 			for j, hit := range hits {
 				items[j] = recallItem{
-					ID:        hit.ID.String(),
-					Namespace: hit.Namespace,
-					Content:   hit.Content,
-					UpdatedAt: hit.UpdatedAt,
-					Similarity: hit.Similarity,
+					ID:              hit.ID.String(),
+					Content:         hit.Content,
+					Tags:            hit.Tags,
+					CreatedAt:       hit.CreatedAt,
+					UpdatedAt:       hit.UpdatedAt,
+					ReinforcedCount: hit.ReinforcedCount,
+					Similarity:      hit.Similarity,
 				}
 			}
-			results[i] = dimGroup{Dimension: rq.dim, Items: items}
+			results[i] = dimGroup{Dimension: rq.dim, Namespace: rq.prefix, Items: items}
 		}()
 	}
 	wg.Wait()
