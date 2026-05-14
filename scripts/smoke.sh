@@ -280,7 +280,7 @@ check_dim() {
 
 run_checks() {
   step "verify each dimension"
-  check_dim "preferences"   "/preferences/${ACTOR}/%"                       "rustacean"
+  check_dim "preferences"   "/preferences/${ACTOR}/"                        "rustacean"
   check_dim "episodes"      "/episodes/${ACTOR}/%"                          "deployed mnemo-smoke"
   check_dim "about"         "/about/${ACTOR}/"                              "Principal Engineer"
   check_dim "project"       "/projects/${ACTOR}/mnemo-smoke/"               "SKIP LOCKED"

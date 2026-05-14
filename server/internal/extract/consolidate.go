@@ -17,9 +17,10 @@ const MaxRecordChars = 16000
 type DimensionKind string
 
 const (
-	DimAbout   DimensionKind = "about"
-	DimProject DimensionKind = "project"
-	DimTask    DimensionKind = "task"
+	DimAbout        DimensionKind = "about"
+	DimProject      DimensionKind = "project"
+	DimTask         DimensionKind = "task"
+	DimPreferences  DimensionKind = "preferences"
 )
 
 // ConsolidationTruncatedError signals the LLM hit max_tokens and produced a
@@ -133,4 +134,41 @@ func TruncateToLimit(s string) string {
 		return s
 	}
 	return s[:MaxRecordChars-4] + "\n..."
+}
+
+// ConsolidateFreshness merges existing record + new content using the
+// freshness-aware prompt. Used for preferences (and any future "evolving
+// list of statements" dimension). Sends as a single user message, no system
+// prompt — matches the Anthropic pattern used by the other consolidation prompts.
+//
+// today and existingLastUpdated are passed as YYYY-MM-DD strings.
+func ConsolidateFreshness(
+	ctx context.Context,
+	cli llm.Client,
+	model string,
+	dim DimensionKind,
+	today, existingLastUpdated, existingBody, newContent string,
+) (string, error) {
+	if existingBody == "" {
+		existingBody = "(none yet)"
+	}
+	if existingLastUpdated == "" {
+		existingLastUpdated = "(n/a)"
+	}
+	prompt := fmt.Sprintf(
+		SystemFreshnessConsolidate,
+		string(dim), today, existingLastUpdated, existingBody, newContent,
+	)
+	out, err := cli.Complete(ctx, llm.CompleteRequest{
+		Model:     model,
+		Messages:  []llm.Message{{Role: "user", Content: prompt}},
+		MaxTokens: 8192,
+	})
+	if err != nil {
+		return "", err
+	}
+	if out.StopReason == "max_tokens" {
+		return "", &ConsolidationTruncatedError{Dim: dim}
+	}
+	return strings.TrimSpace(out.Text), nil
 }

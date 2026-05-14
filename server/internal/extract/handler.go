@@ -126,14 +126,16 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	hasTask := ptl.TaskDomain != "unknown" && !isNone(ptl.Facts)
 	hasDaily := !isNone(ptl.Daily)
 	hasAbout := !isNone(aboutText)
+	hasPreferences := len(prefs.Preferences) > 0
 
 	// Consolidation LLM calls happen OUTSIDE the tx (they can take seconds).
 	// We accept the cost of re-running them on retry.
 
 	var (
-		consolidatedProject string
-		consolidatedTask    string
-		consolidatedAbout   string
+		consolidatedProject     string
+		consolidatedTask        string
+		consolidatedAbout       string
+		consolidatedPreferences string
 	)
 
 	if hasProject {
@@ -188,6 +190,39 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		consolidatedAbout = merged
 	}
 
+	// Build new preferences content as bullet list, then freshness-consolidate.
+	var newPrefsContent string
+	if hasPreferences {
+		var b strings.Builder
+		for _, pref := range prefs.Preferences {
+			if strings.TrimSpace(pref) == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "- %s\n", pref)
+		}
+		newPrefsContent = strings.TrimRight(b.String(), "\n")
+		if newPrefsContent == "" {
+			hasPreferences = false
+		}
+	}
+
+	if hasPreferences {
+		ns := fmt.Sprintf("/preferences/%s/", p.ActorID)
+		priorBody := ""
+		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
+		if priors, err := h.readPrior(ctx, p.ActorID, ns); err != nil {
+			return err
+		} else if len(priors) > 0 {
+			priorBody = priors[0]
+		}
+		today := time.Now().UTC().Format("2006-01-02")
+		merged, err := ConsolidateFreshness(ctx, h.LLM, h.Model, DimPreferences, today, priorDate, priorBody, newPrefsContent)
+		if err != nil {
+			return err
+		}
+		consolidatedPreferences = merged
+	}
+
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -196,7 +231,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 
 	// Idempotency: wipe prior append-dim writes for this event before re-inserting.
 	if err := h.Store.DeleteAppendMemoriesForEvent(ctx, tx, p.ActorID, p.EventID,
-		[]string{"preferences", "episodes", "daily_log"}); err != nil {
+		[]string{"episodes", "daily_log"}); err != nil {
 		return err
 	}
 
@@ -244,14 +279,11 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		}
 	}
 
-	for _, pref := range prefs.Preferences {
-		if strings.TrimSpace(pref) == "" {
-			continue
-		}
-		if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "preferences",
-			Namespace:     fmt.Sprintf("/preferences/%s/", p.ActorID),
-			Content:       pref,
+	if hasPreferences {
+		ns := fmt.Sprintf("/preferences/%s/", p.ActorID)
+		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
+			ActorID: p.ActorID, Dimension: "preferences", Namespace: ns,
+			Content:       TruncateToLimit(consolidatedPreferences),
 			SourceEventID: &p.EventID,
 		}); err != nil {
 			return err
@@ -291,6 +323,18 @@ func (h *Handler) readPrior(ctx context.Context, actor, namespace string) ([]str
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (h *Handler) readPriorUpdatedAt(ctx context.Context, actor, namespace string) string {
+	var t time.Time
+	err := h.Store.DB.QueryRowContext(ctx,
+		`SELECT updated_at FROM memories WHERE actor_id=$1 AND namespace=$2`,
+		actor, namespace,
+	).Scan(&t)
+	if err != nil {
+		return ""
+	}
+	return t.UTC().Format("2006-01-02")
 }
 
 func turnsToText(raw json.RawMessage) string {

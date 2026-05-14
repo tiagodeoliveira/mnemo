@@ -53,6 +53,8 @@ func setup(t *testing.T) (*store.Store, *Handler, uuid.UUID) {
 			userMsg = req.Messages[0].Content
 		}
 		switch {
+		case strings.Contains(userMsg, "maintaining a long-lived preferences record"):
+			return llm.CompleteResponse{Text: "- use Go for backend services (2026-05-14)"}, nil
 		case strings.Contains(userMsg, "CLASSIFY THE TASK DOMAIN"):
 			// Classifier prompt (project/task/daily log)
 			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
