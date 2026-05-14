@@ -60,19 +60,26 @@ ABOUT:
 // infra/lambda/context-extractor/index.ts (lines 307-329).
 //
 // The record limit (16000) replaces ${AGENTCORE_RECORD_LIMIT}.
-// Two runtime values are injected via fmt.Sprintf:
-//   %s[0] — existing bio text (or "(none yet)")
-//   %s[1] — new observations to incorporate
+// Four runtime values are injected via fmt.Sprintf:
+//   %s[0] — today's date (YYYY-MM-DD, UTC)
+//   %s[1] — existing bio's last_updated date (YYYY-MM-DD), or "(n/a)"
+//   %s[2] — existing bio text (or "(none yet)")
+//   %s[3] — new observations to incorporate
 //
-// Usage: fmt.Sprintf(SystemAboutConsolidate, existingText, newContent)
+// Usage: fmt.Sprintf(SystemAboutConsolidate, today, existingLastUpdated, existingText, newContent)
 const SystemAboutConsolidate = `You are maintaining a living biographical profile of a person, updated over time as new information surfaces about them.
 
 This is an ABOUT memory — who the actor is as a person: background, role, expertise, ongoing interests, identity attributes. Think of it as a short "About" section on someone's personal site.
 
+CONTEXT:
+- Today's date: %s
+- The existing bio was last updated: %s
+
 Rules:
-- Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list.
+- Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list. Do NOT add date annotations inline — the bio's freshness is tracked by the row's update timestamp, not by in-prose dates.
 - Open with the person's name if it is known from the existing bio or the new observations. If no name has ever been stated, refer to them as "the actor" (lowercase, no quotes) and do NOT invent one.
 - Merge the new information with the existing bio. Drop outdated or contradicted facts — keep the most recent version.
+- If the existing bio was last updated more than 24 months before today, treat each major fact in the existing bio (role, employer, location, current project) as potentially stale. Verify each against the new content; drop or soften any major fact that the new content does NOT reinforce.
 - Biographical scope only. Project names and one-sentence scope are fine ("she is building a real-time meeting assistant called meeting_companion"). Do NOT include library versions, source file paths, module names, port numbers, database choices, authentication providers, test counts, or any code-level detail. If the existing bio contains such details, strip them out. Those belong in project memory, never in the bio.
 - Stay under ~800 words. A good bio is dense and specific.
 - Do not invent facts. Only include what the existing bio or new observations clearly establish.
@@ -93,22 +100,32 @@ Output ONLY the merged bio text — no headers, labels, or explanations.`
 // (lines 331-353).
 //
 // The record limit (16000) replaces ${AGENTCORE_RECORD_LIMIT}.
-// Three runtime values are injected via fmt.Sprintf:
+// Five runtime values are injected via fmt.Sprintf:
 //   %s[0] — type instructions (project-specific or task-specific paragraph)
-//   %s[1] — existing records text
-//   %s[2] — new information to incorporate
+//   %s[1] — today's date (YYYY-MM-DD, UTC)
+//   %s[2] — existing record's last_updated date (YYYY-MM-DD), or "(n/a)"
+//   %s[3] — existing records text
+//   %s[4] — new information to incorporate
 //
-// Usage: fmt.Sprintf(SystemProjectTaskConsolidate, typeInstructions, existingText, newContent)
+// Usage: fmt.Sprintf(SystemProjectTaskConsolidate, typeInstructions, today, existingLastUpdated, existingText, newContent)
 const SystemProjectTaskConsolidate = `You are consolidating memory records into a single distilled record that supersedes all inputs.
 
 %s
 
+CONTEXT:
+- Today's date: %s
+- The existing record was last updated: %s
+
 Rules:
-- Merge overlapping statements — keep only the most complete version of each fact
-- When facts conflict, keep the most recent version
-- Write concisely — a good record reads like a design doc, not a changelog
-- Drop anything that won't be useful in a future session
-- HARD LIMIT: output must be under 16000 characters. Prioritize the most important facts and cut aggressively if needed
+- Format: a flat list of statements, each on its own line, prefixed with "- ". One statement per bullet. No sub-bullets, no section headers.
+- Each bullet ends with a date marker "(YYYY-MM-DD)" indicating when the statement was last reinforced.
+- When the new content reinforces an existing bullet (even paraphrased), bump its date to today and keep the more concise phrasing.
+- When the new content contradicts an existing bullet, drop the existing bullet silently (no audit trail) and add the new statement with today's date.
+- When the new content introduces a fact not present in the existing record, add it as a new bullet with today's date.
+- Drop any bullet whose date is more than 12 months older than today AND not reinforced today.
+- Merge overlapping statements — keep only the most complete version of each fact.
+- Drop anything that won't be useful in a future session.
+- HARD LIMIT: output must be under 16000 characters. Prioritize the most important facts and cut aggressively if needed.
 
 EXISTING RECORDS:
 %s
@@ -116,7 +133,7 @@ EXISTING RECORDS:
 NEW INFORMATION TO INCORPORATE:
 %s
 
-Output ONLY the merged content — no headers, labels, or explanations.`
+Output ONLY the merged content — no preamble, no explanation.`
 
 // SystemPreferences is net-new for the Go rewrite. AgentCore handled this as a
 // built-in strategy in the AWS version.

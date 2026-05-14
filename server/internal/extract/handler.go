@@ -142,6 +142,8 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	// Consolidation LLM calls happen OUTSIDE the tx (they can take seconds).
 	// We accept the cost of re-running them on retry.
 
+	today := time.Now().UTC().Format("2006-01-02")
+
 	var (
 		consolidatedProject     string
 		consolidatedTask        string
@@ -155,8 +157,9 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		if err != nil {
 			return err
 		}
+		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
 		if len(prior) > 0 {
-			merged, err := Consolidate(ctx, h.LLM, h.Model, DimProject, prior, ptl.Facts, projectName)
+			merged, err := Consolidate(ctx, h.LLM, h.Model, DimProject, prior, ptl.Facts, projectName, today, priorDate)
 			if err != nil {
 				return err
 			}
@@ -172,8 +175,9 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		if err != nil {
 			return err
 		}
+		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
 		if len(prior) > 0 {
-			merged, err := Consolidate(ctx, h.LLM, h.Model, DimTask, prior, ptl.Facts, "")
+			merged, err := Consolidate(ctx, h.LLM, h.Model, DimTask, prior, ptl.Facts, "", today, priorDate)
 			if err != nil {
 				return err
 			}
@@ -189,8 +193,9 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		if err != nil {
 			return err
 		}
+		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
 		// About ALWAYS consolidates, even on first write — narrative shape.
-		merged, err := Consolidate(ctx, h.LLM, h.Model, DimAbout, prior, aboutText, "")
+		merged, err := Consolidate(ctx, h.LLM, h.Model, DimAbout, prior, aboutText, "", today, priorDate)
 		if err != nil {
 			var ct *ConsolidationTruncatedError
 			if errors.As(err, &ct) {
@@ -226,7 +231,6 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		} else if len(priors) > 0 {
 			priorBody = priors[0]
 		}
-		today := time.Now().UTC().Format("2006-01-02")
 		merged, err := ConsolidateFreshness(ctx, h.LLM, h.Model, DimPreferences, today, priorDate, priorBody, newPrefsContent)
 		if err != nil {
 			return err

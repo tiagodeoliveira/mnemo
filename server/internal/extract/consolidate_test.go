@@ -26,7 +26,7 @@ func TestConsolidateAboutFirstWrite(t *testing.T) {
 		}
 		return llm.CompleteResponse{Text: "  the actor is a senior engineer.\n"}, nil
 	}}
-	out, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "tiago is a senior engineer", "")
+	out, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "tiago is a senior engineer", "", "2026-05-14", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestConsolidateProjectInjectsName(t *testing.T) {
 		return llm.CompleteResponse{Text: "consolidated"}, nil
 	}}
 	_, err := Consolidate(context.Background(), stub, "claude-test", DimProject,
-		[]string{"prior fact"}, "new fact", "mnemo")
+		[]string{"prior fact"}, "new fact", "mnemo", "2026-05-14", "2024-01-01")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestConsolidateTaskNoNameNeeded(t *testing.T) {
 		return llm.CompleteResponse{Text: "ok"}, nil
 	}}
 	_, err := Consolidate(context.Background(), stub, "claude-test", DimTask,
-		[]string{"a", "b"}, "new", "")
+		[]string{"a", "b"}, "new", "", "2026-05-14", "2024-01-01")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestConsolidateTruncatedErrors(t *testing.T) {
 	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Text: "...", StopReason: "max_tokens"}, nil
 	}}
-	_, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "new", "")
+	_, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "new", "", "2026-05-14", "")
 	var ct *ConsolidationTruncatedError
 	if err == nil {
 		t.Fatal("expected truncated error")

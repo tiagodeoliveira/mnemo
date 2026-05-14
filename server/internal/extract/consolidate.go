@@ -42,6 +42,8 @@ func (e *ConsolidationTruncatedError) Error() string {
 // for first write.
 // newContent: the newly-extracted text (Facts for project/task, About blob for about).
 // metaProject: passed through to the project type-instructions. Ignored for task and about.
+// today: current date as YYYY-MM-DD (UTC). Used for freshness rules.
+// existingLastUpdated: the existing record's last_updated date as YYYY-MM-DD, or "" if unknown.
 //
 // Returns the cleaned LLM output, or a ConsolidationTruncatedError on max_tokens.
 func Consolidate(
@@ -52,8 +54,10 @@ func Consolidate(
 	existingRecords []string,
 	newContent string,
 	metaProject string,
+	today string,
+	existingLastUpdated string,
 ) (string, error) {
-	prompt, err := buildConsolidationPrompt(dim, existingRecords, newContent, metaProject)
+	prompt, err := buildConsolidationPrompt(dim, existingRecords, newContent, metaProject, today, existingLastUpdated)
 	if err != nil {
 		return "", err
 	}
@@ -71,7 +75,7 @@ func Consolidate(
 	return strings.TrimSpace(out.Text), nil
 }
 
-func buildConsolidationPrompt(dim DimensionKind, existing []string, newContent, project string) (string, error) {
+func buildConsolidationPrompt(dim DimensionKind, existing []string, newContent, project, today, existingLastUpdated string) (string, error) {
 	var existingText string
 	if len(existing) == 0 {
 		existingText = "(none yet)"
@@ -86,18 +90,22 @@ func buildConsolidationPrompt(dim DimensionKind, existing []string, newContent, 
 		existingText = b.String()
 	}
 
+	if existingLastUpdated == "" {
+		existingLastUpdated = "(n/a)"
+	}
+
 	switch dim {
 	case DimAbout:
-		return fmt.Sprintf(SystemAboutConsolidate, existingText, newContent), nil
+		return fmt.Sprintf(SystemAboutConsolidate, today, existingLastUpdated, existingText, newContent), nil
 	case DimProject:
 		typeInstr := fmt.Sprintf(
 			`This is a PROJECT memory for %q. Keep architecture decisions, design rationale, and system constraints. Drop implementation specifics that belong in the code itself.`,
 			sanitizeMetaValue(project),
 		)
-		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, existingText, newContent), nil
+		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, today, existingLastUpdated, existingText, newContent), nil
 	case DimTask:
 		typeInstr := `This is a TASK memory for transferable domain insights. Keep patterns and lessons that apply beyond a single session. Drop session-specific details.`
-		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, existingText, newContent), nil
+		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, today, existingLastUpdated, existingText, newContent), nil
 	default:
 		return "", errors.New("consolidate: unknown dimension")
 	}
