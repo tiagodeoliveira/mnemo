@@ -13,37 +13,46 @@
 # Produces: /tmp/auris-meetings-bundle.tar.gz
 # Transfer with: scp tiago@<vps>:/tmp/auris-meetings-bundle.tar.gz ./
 #
-# Assumptions:
-#   - auris docker compose is at ~/auris (AURIS_DIR to override)
-#   - compose file is docker-compose.deploy.yml
-#   - postgres service is named "postgres", server service is named "server"
+# Assumptions (verified against jarvis production on 2026-05-14):
+#   - postgres container is named `auris-postgres`
+#   - server container is named `auris-server`
+#   - DB user + db name are both `meeting_companion`
+#     (the project was renamed from meeting_companion to auris but the
+#      DB credentials weren't migrated)
 #   - transcripts live at /data/blobs/meetings/<id>/transcription.jsonl
-#     inside the server container
+#     inside the auris-server container
+#
+# Override via env if the deploy ever changes:
+#   PG_CONTAINER, PG_USER, PG_DB, SERVER_CONTAINER
 
 set -euo pipefail
 
-AURIS_DIR="${AURIS_DIR:-$HOME/auris}"
-COMPOSE_FILE="${AURIS_DIR}/docker-compose.deploy.yml"
+PG_CONTAINER="${PG_CONTAINER:-auris-postgres}"
+PG_USER="${PG_USER:-meeting_companion}"
+PG_DB="${PG_DB:-meeting_companion}"
+SERVER_CONTAINER="${SERVER_CONTAINER:-auris-server}"
 OUTPUT="${OUTPUT:-/tmp/auris-meetings-bundle.tar.gz}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-if [[ ! -f "$COMPOSE_FILE" ]]; then
-  echo "compose file not found: $COMPOSE_FILE" >&2
-  echo "Set AURIS_DIR to the directory containing docker-compose.deploy.yml" >&2
-  exit 1
-fi
+# Sanity: containers must be running.
+for c in "$PG_CONTAINER" "$SERVER_CONTAINER"; do
+  if ! docker ps --format '{{.Names}}' | grep -qx "$c"; then
+    echo "container '$c' not running. Override with PG_CONTAINER / SERVER_CONTAINER env vars." >&2
+    exit 1
+  fi
+done
 
 # Run a SQL query against the auris postgres container.
 # -t -A: tuples-only, unaligned; -F'|': pipe-separated for multi-column
 pg() {
-  docker compose -f "$COMPOSE_FILE" exec -T postgres \
-    psql -U auris -d auris -t -A -F'|' -c "$1"
+  docker exec -i "$PG_CONTAINER" \
+    psql -U "$PG_USER" -d "$PG_DB" -t -A -F'|' -c "$1"
 }
 
 # Run a shell command inside the auris server container.
 server_exec() {
-  docker compose -f "$COMPOSE_FILE" exec -T server "$@"
+  docker exec -i "$SERVER_CONTAINER" "$@"
 }
 
 # Step 1: determine which meetings to extract.
