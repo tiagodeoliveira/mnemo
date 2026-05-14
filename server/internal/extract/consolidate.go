@@ -60,14 +60,14 @@ type ConsolidationTruncatedError = ConsolidationDiffError
 // ConsolidateResult is the return type of ConsolidateItems.
 type ConsolidateResult struct {
 	Diff       store.MemoryDiff
-	IsDegraded bool   // true when validation fell through to insert-only fallback
+	IsDegraded bool   // true when JSON parse failed and fell back to insert-only
 	LastError  string // populated when IsDegraded is true
 }
 
-// ConsolidateItems calls the LLM to produce a MemoryDiff merging existing items
-// with newly-extracted items. On validation failure it retries once with a
-// corrective prompt. After two failures it returns an insert-only diff with
-// IsDegraded=true.
+// ConsolidateItems calls the LLM once to produce a MemoryDiff merging existing
+// items with newly-extracted items. On JSON parse failure it returns an
+// insert-only diff with IsDegraded=true. Overlap/hallucination resolution
+// happens later in ApplyMemoryDiff.
 func ConsolidateItems(
 	ctx context.Context,
 	cli llm.Client,
@@ -80,7 +80,6 @@ func ConsolidateItems(
 	systemPrompt := buildSystemPrompt(kind, cctx)
 	userMsg := buildUserMessage(cctx.Today, existing, incoming)
 
-	// First attempt.
 	raw, truncated, err := callLLM(ctx, cli, model, systemPrompt, userMsg)
 	if err != nil {
 		return ConsolidateResult{}, err
@@ -89,38 +88,15 @@ func ConsolidateItems(
 		return ConsolidateResult{}, &ConsolidationDiffError{Msg: "LLM hit max_tokens on consolidation"}
 	}
 
-	diff, verr := ParseDiff(raw)
-	if verr == nil {
-		verr = validateDiff(diff, existing)
-	}
-	if verr == nil {
-		return ConsolidateResult{Diff: diff}, nil
-	}
-
-	// One retry with corrective prompt.
-	slog.Warn("consolidation diff invalid on first attempt, retrying", "kind", kind, "err", verr)
-	corrective := userMsg + "\n\nYour previous response had an error: " + verr.Error() +
-		"\nReturn a corrected JSON diff only. Do not repeat the error."
-	raw2, truncated2, err2 := callLLM(ctx, cli, model, systemPrompt, corrective)
-	if err2 != nil {
-		return ConsolidateResult{}, err2
-	}
-	if truncated2 {
-		return degradedResult(incoming, "LLM hit max_tokens on retry"), nil
+	diff, perr := ParseDiff(raw)
+	if perr != nil {
+		// JSON parse failure — degrade to insert-only.
+		slog.Warn("consolidation diff parse failed, degrading to insert-only",
+			"kind", kind, "err", perr)
+		return degradedResult(incoming, perr.Error()), nil
 	}
 
-	diff2, verr2 := ParseDiff(raw2)
-	if verr2 == nil {
-		verr2 = validateDiff(diff2, existing)
-	}
-	if verr2 == nil {
-		return ConsolidateResult{Diff: diff2}, nil
-	}
-
-	// Both attempts failed — degrade to insert-only.
-	slog.Warn("consolidation diff invalid after retry, degrading to insert-only",
-		"kind", kind, "err", verr2)
-	return degradedResult(incoming, verr2.Error()), nil
+	return ConsolidateResult{Diff: diff}, nil
 }
 
 func callLLM(ctx context.Context, cli llm.Client, model, system, userMsg string) (text string, truncated bool, err error) {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,8 +46,151 @@ type DiffApplyOpts struct {
 	TTLDays int
 }
 
-// ApplyMemoryDiff validates the diff against existing items (re-queried inside
+// ResolveReport counts how many operations were dropped during diff resolution.
+type ResolveReport struct {
+	OverlapKeepReinforce   int
+	OverlapKeepUpdate      int
+	OverlapKeepDelete      int
+	OverlapReinforceUpdate int
+	OverlapReinforceDelete int
+	OverlapUpdateDelete    int
+	HallucinatedKeep       int
+	HallucinatedReinforce  int
+	HallucinatedUpdate     int
+	HallucinatedDelete     int
+	EmptyInsert            int
+}
+
+// Total returns the total count of resolved (dropped) operations.
+func (r ResolveReport) Total() int {
+	return r.OverlapKeepReinforce + r.OverlapKeepUpdate + r.OverlapKeepDelete +
+		r.OverlapReinforceUpdate + r.OverlapReinforceDelete + r.OverlapUpdateDelete +
+		r.HallucinatedKeep + r.HallucinatedReinforce + r.HallucinatedUpdate + r.HallucinatedDelete +
+		r.EmptyInsert
+}
+
+// IsEmpty returns true when no operations were dropped.
+func (r ResolveReport) IsEmpty() bool { return r.Total() == 0 }
+
+// resolveAndValidateDiff mutates the LLM-returned diff into a canonical, self-consistent
+// form. Returns the cleaned diff + a report of what was resolved.
+// Resolution rules (precedence: delete > update > reinforce > keep):
+//
+//	keep ∩ X → drop from keep (X wins)
+//	reinforce ∩ {update, delete} → drop from reinforce
+//	update ∩ delete → drop from update
+//	hallucinated IDs in any set → drop
+//	empty inserts → drop
+func resolveAndValidateDiff(d MemoryDiff, valid map[uuid.UUID]bool) (MemoryDiff, ResolveReport) {
+	var rep ResolveReport
+
+	// Build high-precedence sets for overlap detection.
+	updateIDs := make(map[uuid.UUID]bool, len(d.Update))
+	for _, op := range d.Update {
+		updateIDs[op.ID] = true
+	}
+	deleteIDs := make(map[uuid.UUID]bool, len(d.Delete))
+	for _, id := range d.Delete {
+		deleteIDs[id] = true
+	}
+	reinforceIDs := make(map[uuid.UUID]bool, len(d.Reinforce))
+	for _, id := range d.Reinforce {
+		reinforceIDs[id] = true
+	}
+
+	// Resolve keep: drop if hallucinated or if also in reinforce/update/delete.
+	keepOut := d.Keep[:0]
+	for _, id := range d.Keep {
+		if !valid[id] {
+			rep.HallucinatedKeep++
+			continue
+		}
+		if reinforceIDs[id] {
+			rep.OverlapKeepReinforce++
+			continue
+		}
+		if updateIDs[id] {
+			rep.OverlapKeepUpdate++
+			continue
+		}
+		if deleteIDs[id] {
+			rep.OverlapKeepDelete++
+			continue
+		}
+		keepOut = append(keepOut, id)
+	}
+
+	// Resolve reinforce: drop if hallucinated or if also in update/delete.
+	reinforceOut := d.Reinforce[:0]
+	for _, id := range d.Reinforce {
+		if !valid[id] {
+			rep.HallucinatedReinforce++
+			continue
+		}
+		if updateIDs[id] {
+			rep.OverlapReinforceUpdate++
+			continue
+		}
+		if deleteIDs[id] {
+			rep.OverlapReinforceDelete++
+			continue
+		}
+		reinforceOut = append(reinforceOut, id)
+	}
+
+	// Resolve update: drop if hallucinated or if also in delete.
+	updateOut := d.Update[:0]
+	for _, op := range d.Update {
+		if !valid[op.ID] {
+			rep.HallucinatedUpdate++
+			continue
+		}
+		if deleteIDs[op.ID] {
+			rep.OverlapUpdateDelete++
+			continue
+		}
+		updateOut = append(updateOut, op)
+	}
+
+	// Resolve delete: drop only if hallucinated.
+	deleteOut := d.Delete[:0]
+	for _, id := range d.Delete {
+		if !valid[id] {
+			rep.HallucinatedDelete++
+			continue
+		}
+		deleteOut = append(deleteOut, id)
+	}
+
+	// Resolve inserts: drop if empty content.
+	insertOut := d.Insert[:0]
+	for _, op := range d.Insert {
+		if strings.TrimSpace(op.Content) == "" {
+			rep.EmptyInsert++
+			continue
+		}
+		insertOut = append(insertOut, op)
+	}
+
+	out := MemoryDiff{
+		Keep:      keepOut,
+		Reinforce: reinforceOut,
+		Update:    updateOut,
+		Delete:    deleteOut,
+		Insert:    insertOut,
+	}
+	return out, rep
+}
+
+// diffHasOps returns true if the diff contains any non-insert operations or any inserts.
+func diffHasOps(d MemoryDiff) bool {
+	return len(d.Keep) > 0 || len(d.Reinforce) > 0 || len(d.Update) > 0 ||
+		len(d.Delete) > 0 || len(d.Insert) > 0
+}
+
+// ApplyMemoryDiff resolves the diff against existing items (re-queried inside
 // the tx for race safety) and applies all operations atomically.
+// Overlapping IDs and hallucinated IDs are auto-resolved instead of rejected.
 func (s *Store) ApplyMemoryDiff(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -61,46 +206,42 @@ func (s *Store) ApplyMemoryDiff(
 	if err != nil {
 		return fmt.Errorf("ApplyMemoryDiff: re-query existing: %w", err)
 	}
-	existingSet := make(map[uuid.UUID]bool)
+	validIDs := make(map[uuid.UUID]bool)
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
 			_ = rows.Close()
 			return err
 		}
-		existingSet[id] = true
+		validIDs[id] = true
 	}
 	if err := rows.Close(); err != nil {
 		return err
 	}
 
-	// Validate IDs in diff against the re-queried set.
-	checkID := func(id uuid.UUID, op string) error {
-		if !existingSet[id] {
-			return fmt.Errorf("ApplyMemoryDiff: ID %s in %s not found in namespace %s", id, op, opts.Namespace)
-		}
-		return nil
+	// Auto-resolve overlaps and hallucinated IDs.
+	resolved, report := resolveAndValidateDiff(diff, validIDs)
+	if !report.IsEmpty() {
+		slog.Warn("consolidation diff resolved",
+			"kind", opts.Dimension,
+			"namespace", opts.Namespace,
+			slog.Int("overlap_keep_reinforce", report.OverlapKeepReinforce),
+			slog.Int("overlap_keep_update", report.OverlapKeepUpdate),
+			slog.Int("overlap_keep_delete", report.OverlapKeepDelete),
+			slog.Int("overlap_reinforce_update", report.OverlapReinforceUpdate),
+			slog.Int("overlap_reinforce_delete", report.OverlapReinforceDelete),
+			slog.Int("overlap_update_delete", report.OverlapUpdateDelete),
+			slog.Int("hallucinated_keep", report.HallucinatedKeep),
+			slog.Int("hallucinated_reinforce", report.HallucinatedReinforce),
+			slog.Int("hallucinated_update", report.HallucinatedUpdate),
+			slog.Int("hallucinated_delete", report.HallucinatedDelete),
+			slog.Int("empty_insert", report.EmptyInsert),
+		)
 	}
 
-	for _, id := range diff.Keep {
-		if err := checkID(id, "keep"); err != nil {
-			return err
-		}
-	}
-	for _, id := range diff.Reinforce {
-		if err := checkID(id, "reinforce"); err != nil {
-			return err
-		}
-	}
-	for _, id := range diff.Delete {
-		if err := checkID(id, "delete"); err != nil {
-			return err
-		}
-	}
-	for _, op := range diff.Update {
-		if err := checkID(op.ID, "update"); err != nil {
-			return err
-		}
+	if !diffHasOps(resolved) {
+		// Nothing to do.
+		return nil
 	}
 
 	now := time.Now().UTC()
@@ -109,7 +250,7 @@ func (s *Store) ApplyMemoryDiff(
 	// keep: no SQL action.
 
 	// reinforce: bump updated_at, expires_at, reinforced_count, source_event_ids.
-	for _, id := range diff.Reinforce {
+	for _, id := range resolved.Reinforce {
 		var q string
 		var args []any
 		if newExpiresAt != nil {
@@ -135,7 +276,7 @@ func (s *Store) ApplyMemoryDiff(
 	}
 
 	// update: set content+tags+embedding (if provided), bump updated_at, expires_at, source_event_ids.
-	for _, op := range diff.Update {
+	for _, op := range resolved.Update {
 		tagsJSON := tagsToJSON(op.Tags)
 		var q string
 		var args []any
@@ -189,14 +330,14 @@ func (s *Store) ApplyMemoryDiff(
 	}
 
 	// delete: hard delete.
-	for _, id := range diff.Delete {
+	for _, id := range resolved.Delete {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE memory_id = $1`, id); err != nil {
 			return fmt.Errorf("ApplyMemoryDiff delete %s: %w", id, err)
 		}
 	}
 
 	// insert: new rows.
-	for _, op := range diff.Insert {
+	for _, op := range resolved.Insert {
 		id := uuid.New()
 		tagsJSON := tagsToJSON(op.Tags)
 		var expiresVal interface{}

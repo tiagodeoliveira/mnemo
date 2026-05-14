@@ -342,7 +342,8 @@ func TestApplyMemoryDiffUpdate(t *testing.T) {
 	}
 }
 
-func TestApplyMemoryDiffUnknownIDRejected(t *testing.T) {
+func TestApplyMemoryDiffHallucinatedIDSilentlyDropped(t *testing.T) {
+	// Hallucinated IDs are now auto-resolved (dropped) rather than rejected.
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
 	defer s.Close()
@@ -360,14 +361,196 @@ func TestApplyMemoryDiffUnknownIDRejected(t *testing.T) {
 		SourceEventID: uuid.New(),
 	}
 	diff := MemoryDiff{
-		Reinforce: []uuid.UUID{uuid.New()}, // non-existent ID
+		Reinforce: []uuid.UUID{uuid.New()}, // non-existent ID — should be dropped silently
 	}
 
 	tx, _ := s.DB.BeginTx(ctx, nil)
 	err := s.ApplyMemoryDiff(ctx, tx, opts, diff)
-	_ = tx.Rollback()
-	if err == nil {
-		t.Fatal("expected error when diff references non-existent ID")
+	_ = tx.Commit()
+	if err != nil {
+		t.Fatalf("expected hallucinated reinforce ID to be silently dropped, got err: %v", err)
+	}
+}
+
+// TestResolveDiff_KeepUpdateOverlap verifies that an ID in both keep and update
+// is dropped from keep (update wins).
+func TestResolveDiff_KeepUpdateOverlap(t *testing.T) {
+	id := uuid.New()
+	valid := map[uuid.UUID]bool{id: true}
+	d := MemoryDiff{
+		Keep:   []uuid.UUID{id},
+		Update: []UpdateOp{{ID: id, Content: "new content"}},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Keep) != 0 {
+		t.Errorf("keep should be empty after overlap with update, got %v", out.Keep)
+	}
+	if len(out.Update) != 1 || out.Update[0].ID != id {
+		t.Errorf("update should still contain id, got %v", out.Update)
+	}
+	if rep.OverlapKeepUpdate != 1 {
+		t.Errorf("expected OverlapKeepUpdate=1, got %d", rep.OverlapKeepUpdate)
+	}
+}
+
+// TestResolveDiff_KeepReinforceOverlap verifies that an ID in both keep and
+// reinforce is dropped from keep (reinforce wins).
+func TestResolveDiff_KeepReinforceOverlap(t *testing.T) {
+	id := uuid.New()
+	valid := map[uuid.UUID]bool{id: true}
+	d := MemoryDiff{
+		Keep:      []uuid.UUID{id},
+		Reinforce: []uuid.UUID{id},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Keep) != 0 {
+		t.Errorf("keep should be empty, got %v", out.Keep)
+	}
+	if len(out.Reinforce) != 1 {
+		t.Errorf("reinforce should still contain id, got %v", out.Reinforce)
+	}
+	if rep.OverlapKeepReinforce != 1 {
+		t.Errorf("expected OverlapKeepReinforce=1, got %d", rep.OverlapKeepReinforce)
+	}
+}
+
+// TestResolveDiff_ReinforceUpdateOverlap verifies that an ID in both reinforce
+// and update is dropped from reinforce (update wins).
+func TestResolveDiff_ReinforceUpdateOverlap(t *testing.T) {
+	id := uuid.New()
+	valid := map[uuid.UUID]bool{id: true}
+	d := MemoryDiff{
+		Reinforce: []uuid.UUID{id},
+		Update:    []UpdateOp{{ID: id, Content: "updated"}},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Reinforce) != 0 {
+		t.Errorf("reinforce should be empty after overlap with update, got %v", out.Reinforce)
+	}
+	if len(out.Update) != 1 {
+		t.Errorf("update should still contain id, got %v", out.Update)
+	}
+	if rep.OverlapReinforceUpdate != 1 {
+		t.Errorf("expected OverlapReinforceUpdate=1, got %d", rep.OverlapReinforceUpdate)
+	}
+}
+
+// TestResolveDiff_UpdateDeleteOverlap verifies that an ID in both update and
+// delete is dropped from update (delete wins).
+func TestResolveDiff_UpdateDeleteOverlap(t *testing.T) {
+	id := uuid.New()
+	valid := map[uuid.UUID]bool{id: true}
+	d := MemoryDiff{
+		Update: []UpdateOp{{ID: id, Content: "updated"}},
+		Delete: []uuid.UUID{id},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Update) != 0 {
+		t.Errorf("update should be empty after overlap with delete, got %v", out.Update)
+	}
+	if len(out.Delete) != 1 {
+		t.Errorf("delete should still contain id, got %v", out.Delete)
+	}
+	if rep.OverlapUpdateDelete != 1 {
+		t.Errorf("expected OverlapUpdateDelete=1, got %d", rep.OverlapUpdateDelete)
+	}
+}
+
+// TestResolveDiff_HallucinatedID verifies that IDs not in the existing set are
+// silently dropped.
+func TestResolveDiff_HallucinatedID(t *testing.T) {
+	realID := uuid.New()
+	fakeID := uuid.New()
+	valid := map[uuid.UUID]bool{realID: true}
+	d := MemoryDiff{
+		Keep:      []uuid.UUID{fakeID},
+		Reinforce: []uuid.UUID{fakeID},
+		Update:    []UpdateOp{{ID: fakeID, Content: "x"}},
+		Delete:    []uuid.UUID{fakeID},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Keep) != 0 || len(out.Reinforce) != 0 || len(out.Update) != 0 || len(out.Delete) != 0 {
+		t.Errorf("all hallucinated ops should be dropped, got keep=%v reinforce=%v update=%v delete=%v",
+			out.Keep, out.Reinforce, out.Update, out.Delete)
+	}
+	if rep.HallucinatedKeep != 1 {
+		t.Errorf("expected HallucinatedKeep=1, got %d", rep.HallucinatedKeep)
+	}
+	if rep.HallucinatedReinforce != 1 {
+		t.Errorf("expected HallucinatedReinforce=1, got %d", rep.HallucinatedReinforce)
+	}
+	if rep.HallucinatedUpdate != 1 {
+		t.Errorf("expected HallucinatedUpdate=1, got %d", rep.HallucinatedUpdate)
+	}
+	if rep.HallucinatedDelete != 1 {
+		t.Errorf("expected HallucinatedDelete=1, got %d", rep.HallucinatedDelete)
+	}
+}
+
+// TestResolveDiff_EmptyAfterResolution verifies that a diff consisting entirely
+// of hallucinated IDs results in an empty report (IsEmpty == true after all drops).
+func TestResolveDiff_EmptyAfterResolution(t *testing.T) {
+	fakeID := uuid.New()
+	valid := map[uuid.UUID]bool{} // no real IDs
+	d := MemoryDiff{
+		Keep:      []uuid.UUID{fakeID},
+		Reinforce: []uuid.UUID{fakeID},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if diffHasOps(out) {
+		t.Errorf("expected empty diff after resolution, got %+v", out)
+	}
+	if rep.IsEmpty() {
+		t.Error("report should not be empty — resolutions were made")
+	}
+	if rep.Total() != 2 {
+		t.Errorf("expected Total=2, got %d", rep.Total())
+	}
+}
+
+// TestResolveDiff_NoChanges verifies that a valid diff with no overlaps and no
+// hallucinations passes through unmodified with report.Total() == 0.
+func TestResolveDiff_NoChanges(t *testing.T) {
+	id1 := uuid.New()
+	id2 := uuid.New()
+	valid := map[uuid.UUID]bool{id1: true, id2: true}
+	d := MemoryDiff{
+		Keep:      []uuid.UUID{id1},
+		Reinforce: []uuid.UUID{id2},
+		Insert:    []InsertOp{{Content: "new item"}},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if rep.Total() != 0 {
+		t.Errorf("expected no resolutions, got report=%+v", rep)
+	}
+	if len(out.Keep) != 1 || out.Keep[0] != id1 {
+		t.Errorf("keep unchanged expected, got %v", out.Keep)
+	}
+	if len(out.Reinforce) != 1 || out.Reinforce[0] != id2 {
+		t.Errorf("reinforce unchanged expected, got %v", out.Reinforce)
+	}
+	if len(out.Insert) != 1 {
+		t.Errorf("insert unchanged expected, got %v", out.Insert)
+	}
+}
+
+// TestResolveDiff_EmptyInsertDropped verifies that inserts with empty content
+// are dropped.
+func TestResolveDiff_EmptyInsertDropped(t *testing.T) {
+	valid := map[uuid.UUID]bool{}
+	d := MemoryDiff{
+		Insert: []InsertOp{
+			{Content: ""},
+			{Content: "  "},
+			{Content: "valid content"},
+		},
+	}
+	out, rep := resolveAndValidateDiff(d, valid)
+	if len(out.Insert) != 1 || out.Insert[0].Content != "valid content" {
+		t.Errorf("expected 1 valid insert, got %v", out.Insert)
+	}
+	if rep.EmptyInsert != 2 {
+		t.Errorf("expected EmptyInsert=2, got %d", rep.EmptyInsert)
 	}
 }
 

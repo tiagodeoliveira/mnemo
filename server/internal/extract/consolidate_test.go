@@ -110,7 +110,7 @@ func TestConsolidateItemsTruncatedReturnsError(t *testing.T) {
 }
 
 func TestConsolidateItemsDegradedOnBadDiff(t *testing.T) {
-	// Both attempts return invalid JSON — should degrade to insert-only.
+	// LLM returns malformed JSON — should degrade to insert-only.
 	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Text: "not json at all"}, nil
 	}}
@@ -132,9 +132,10 @@ func TestConsolidateItemsDegradedOnBadDiff(t *testing.T) {
 	}
 }
 
-func TestConsolidateItemsUnknownIDReturnsError(t *testing.T) {
-	// LLM references a UUID that is not in existing — validation must fail,
-	// then retry also fails, then degrade.
+func TestConsolidateItemsUnknownIDPassesThrough(t *testing.T) {
+	// LLM references a UUID that is not in existing — consolidate no longer
+	// validates IDs (resolution happens in ApplyMemoryDiff). The diff parses
+	// fine and is returned non-degraded.
 	unknownID := uuid.New()
 	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
 		resp := `{"keep":["` + unknownID.String() + `"],"reinforce":[],"delete":[],"update":[],"insert":[]}`
@@ -150,8 +151,11 @@ func TestConsolidateItemsUnknownIDReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.IsDegraded {
-		t.Error("expected degraded=true when LLM returns unknown IDs")
+	if result.IsDegraded {
+		t.Error("expected non-degraded: unknown IDs are resolved in ApplyMemoryDiff, not here")
+	}
+	if len(result.Diff.Keep) != 1 || result.Diff.Keep[0] != unknownID {
+		t.Errorf("expected keep to contain unknownID, got %v", result.Diff.Keep)
 	}
 }
 
