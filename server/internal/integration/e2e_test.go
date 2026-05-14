@@ -14,6 +14,7 @@ import (
 
 	"github.com/tiagodeoliveira/mnemo/server/internal/api"
 	"github.com/tiagodeoliveira/mnemo/server/internal/digest"
+	"github.com/tiagodeoliveira/mnemo/server/internal/embed"
 	"github.com/tiagodeoliveira/mnemo/server/internal/extract"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/meeting"
@@ -93,13 +94,16 @@ func TestEventToRecallEndToEnd(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cli := stubLLM()
-	extractH := &extract.Handler{Store: s, LLM: cli, Model: "x"}
-	meetingH := &meeting.Handler{Store: s, LLM: cli, Model: "x"}
-	digestH := &digest.Handler{Store: s, LLM: cli, Model: "x", Mailer: &digest.Mailer{}}
+	stubEmbedClient := &embed.Stub{}
+	extractH := &extract.Handler{Store: s, LLM: cli, Model: "x", Embed: stubEmbedClient}
+	meetingH := &meeting.Handler{Store: s, LLM: cli, Model: "x", Embed: stubEmbedClient}
+	digestH := &digest.Handler{Store: s, LLM: cli, Model: "x", Mailer: &digest.Mailer{}, Embed: stubEmbedClient}
+	backfillH := &queue.BackfillEmbeddingsHandler{Store: s, Embed: stubEmbedClient, Logger: logger}
 	handlers := map[store.JobKind]queue.Handler{
-		store.KindExtractContext:  extractH.Handle,
-		store.KindFinalizeMeeting: meetingH.Handle,
-		store.KindDailyDigest:     digestH.Handle,
+		store.KindExtractContext:     extractH.Handle,
+		store.KindFinalizeMeeting:    meetingH.Handle,
+		store.KindDailyDigest:        digestH.Handle,
+		store.KindBackfillEmbeddings: backfillH.Handle,
 	}
 	pool := queue.NewPool(s, logger, 2, handlers)
 	poolDone := make(chan struct{})
@@ -110,7 +114,9 @@ func TestEventToRecallEndToEnd(t *testing.T) {
 
 	router := api.NewRouter(api.Deps{
 		Store: s, Logger: logger,
-		DevActorID: "alice",
+		DevActorID:    "alice",
+		EmbedClient:   stubEmbedClient,
+		EmbedDisabled: false,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

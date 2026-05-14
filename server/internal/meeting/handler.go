@@ -4,16 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/tiagodeoliveira/mnemo/server/internal/embed"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
 type Handler struct {
-	Store *store.Store
-	LLM   llm.Client
-	Model string
+	Store         *store.Store
+	LLM           llm.Client
+	Model         string
+	Embed         embed.Client
+	EmbedDisabled bool
 }
 
 type payload struct {
@@ -79,22 +83,46 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return fmt.Errorf("parse meeting output: %w", err)
 	}
 
+	// Collect non-empty category bodies.
+	type catBody struct {
+		cat  string
+		body string
+	}
+	var catBodies []catBody
+	for _, cat := range Categories {
+		body := strings.TrimSpace(parsed[cat])
+		if body != "" {
+			catBodies = append(catBodies, catBody{cat, body})
+		}
+	}
+
+	// Batch-embed all category bodies before the tx.
+	catEmbeddings := make([][]float32, len(catBodies))
+	if !h.EmbedDisabled && h.Embed != nil && len(catBodies) > 0 {
+		texts := make([]string, len(catBodies))
+		for i, cb := range catBodies {
+			texts[i] = cb.body
+		}
+		if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: texts}); err2 == nil {
+			catEmbeddings = er.Vectors
+		} else {
+			slog.Warn("embed meeting categories inline failed; backfill will retry", "err", err2)
+		}
+	}
+
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	for _, cat := range Categories {
-		body := strings.TrimSpace(parsed[cat])
-		if body == "" {
-			continue
-		}
+	for i, cb := range catBodies {
 		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
 			ActorID:   p.ActorID,
 			Dimension: "meeting",
-			Namespace: fmt.Sprintf("/meetings/%s/%s/%s/", p.ActorID, p.MeetingID, cat),
-			Content:   body,
+			Namespace: fmt.Sprintf("/meetings/%s/%s/%s/", p.ActorID, p.MeetingID, cb.cat),
+			Content:   cb.body,
+			Embedding: catEmbeddings[i],
 		}); err != nil {
 			return err
 		}

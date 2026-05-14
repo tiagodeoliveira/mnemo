@@ -10,9 +10,10 @@ import (
 type JobKind string
 
 const (
-	KindExtractContext  JobKind = "extract_context"
-	KindFinalizeMeeting JobKind = "finalize_meeting"
-	KindDailyDigest     JobKind = "daily_digest"
+	KindExtractContext       JobKind = "extract_context"
+	KindFinalizeMeeting      JobKind = "finalize_meeting"
+	KindDailyDigest          JobKind = "daily_digest"
+	KindBackfillEmbeddings   JobKind = "backfill_embeddings"
 )
 
 type Job struct {

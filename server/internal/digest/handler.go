@@ -5,17 +5,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/tiagodeoliveira/mnemo/server/internal/embed"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
 type Handler struct {
-	Store  *store.Store
-	LLM    llm.Client
-	Model  string
-	Mailer *Mailer
+	Store         *store.Store
+	LLM           llm.Client
+	Model         string
+	Mailer        *Mailer
+	Embed         embed.Client
+	EmbedDisabled bool
 }
 
 type payload struct {
@@ -73,6 +77,16 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return fmt.Errorf("digest: empty output")
 	}
 
+	// Pre-compute embedding for the digest text before opening the tx.
+	var digestEmbed []float32
+	if !h.EmbedDisabled && h.Embed != nil {
+		if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: []string{digestText}}); err2 == nil {
+			digestEmbed = er.Vectors[0]
+		} else {
+			slog.Warn("embed daily_summary inline failed; backfill will retry", "err", err2)
+		}
+	}
+
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -83,6 +97,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		Dimension: "daily_summary",
 		Namespace: fmt.Sprintf("/daily/%s/%s/summary/", p.ActorID, p.Date),
 		Content:   digestText,
+		Embedding: digestEmbed,
 	}); err != nil {
 		return err
 	}

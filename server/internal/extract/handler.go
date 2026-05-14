@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/tiagodeoliveira/mnemo/server/internal/embed"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
@@ -29,9 +30,11 @@ var defaultTTLDays = map[string]int{
 }
 
 type Handler struct {
-	Store *store.Store
-	LLM   llm.Client
-	Model string
+	Store         *store.Store
+	LLM           llm.Client
+	Model         string
+	Embed         embed.Client
+	EmbedDisabled bool
 }
 
 type contextPayload struct {
@@ -286,6 +289,15 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		}
 	}
 
+	// Pre-compute embeddings for diff items BEFORE opening the tx.
+	// Inline failures are logged and ignored — the backfill job recovers them.
+	if !h.EmbedDisabled && h.Embed != nil {
+		h.embedDiff(ctx, &projectDiffResult.Diff)
+		h.embedDiff(ctx, &taskDiffResult.Diff)
+		h.embedDiff(ctx, &aboutDiffResult.Diff)
+		h.embedDiff(ctx, &prefsDiffResult.Diff)
+	}
+
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -332,6 +344,14 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 				Valid: true,
 			}
 		}
+		var dailyEmbed []float32
+		if !h.EmbedDisabled && h.Embed != nil {
+			if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: []string{ptl.Daily}}); err2 == nil {
+				dailyEmbed = er.Vectors[0]
+			} else {
+				slog.Warn("embed daily_log inline failed; backfill will retry", "err", err2)
+			}
+		}
 		if _, err := h.Store.InsertItem(ctx, tx, store.ItemInput{
 			ActorID:       p.ActorID,
 			Dimension:     "daily_log",
@@ -340,6 +360,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 			Tags:          []string{},
 			SourceEventID: p.EventID,
 			ExpiresAt:     expiresAt,
+			Embedding:     dailyEmbed,
 		}); err != nil {
 			return err
 		}
@@ -357,8 +378,23 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 			episodesNamespace = fmt.Sprintf("/episodes/%s/", p.ActorID)
 		}
 		epTTL := ttlFor("episodes")
+
+		// Batch-embed all episode texts before the insert loop.
+		var epTexts []string
 		for _, e := range ep.Episodes {
-			text := "Event: " + e.Event + "\nReflection: " + e.Reflection
+			epTexts = append(epTexts, "Event: "+e.Event+"\nReflection: "+e.Reflection)
+		}
+		epEmbeddings := make([][]float32, len(epTexts))
+		if !h.EmbedDisabled && h.Embed != nil && len(epTexts) > 0 {
+			if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: epTexts}); err2 == nil {
+				epEmbeddings = er.Vectors
+			} else {
+				slog.Warn("embed episodes inline failed; backfill will retry", "err", err2)
+			}
+		}
+
+		for i, e := range ep.Episodes {
+			text := epTexts[i]
 			var expiresAt sql.NullTime
 			if epTTL > 0 {
 				expiresAt = sql.NullTime{
@@ -374,9 +410,11 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 				Tags:          []string{},
 				SourceEventID: p.EventID,
 				ExpiresAt:     expiresAt,
+				Embedding:     epEmbeddings[i],
 			}); err != nil {
 				return err
 			}
+			_ = e
 		}
 	}
 
@@ -403,6 +441,39 @@ func (h *Handler) existingItemRefs(ctx context.Context, actorID, namespace strin
 		}
 	}
 	return refs, nil
+}
+
+// embedDiff pre-computes embeddings for all Insert and Update ops in a diff.
+// On failure it logs and leaves embeddings nil; the backfill job recovers them.
+func (h *Handler) embedDiff(ctx context.Context, diff *store.MemoryDiff) {
+	var texts []string
+	for _, op := range diff.Insert {
+		texts = append(texts, op.Content)
+	}
+	for _, op := range diff.Update {
+		texts = append(texts, op.Content)
+	}
+	if len(texts) == 0 {
+		return
+	}
+	resp, err := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: texts})
+	if err != nil {
+		slog.Warn("embed diff inline failed; backfill will retry", "err", err, "n", len(texts))
+		return
+	}
+	i := 0
+	for j := range diff.Insert {
+		if i < len(resp.Vectors) {
+			diff.Insert[j].Embedding = resp.Vectors[i]
+		}
+		i++
+	}
+	for j := range diff.Update {
+		if i < len(resp.Vectors) {
+			diff.Update[j].Embedding = resp.Vectors[i]
+		}
+		i++
+	}
 }
 
 func turnsToText(raw json.RawMessage) string {

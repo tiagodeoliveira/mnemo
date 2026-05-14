@@ -7,19 +7,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pgvector/pgvector-go"
 )
 
 // UpdateOp is an update operation in a MemoryDiff.
 type UpdateOp struct {
-	ID      uuid.UUID `json:"id"`
-	Content string    `json:"content"`
-	Tags    []string  `json:"tags"`
+	ID        uuid.UUID `json:"id"`
+	Content   string    `json:"content"`
+	Tags      []string  `json:"tags"`
+	Embedding []float32 `json:"-"` // populated by handler when content changes
 }
 
 // InsertOp is an insert operation in a MemoryDiff.
 type InsertOp struct {
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
+	Content   string    `json:"content"`
+	Tags      []string  `json:"tags"`
+	Embedding []float32 `json:"-"` // populated by handler, not LLM
 }
 
 // MemoryDiff is the consolidated diff returned by the LLM and applied to the store.
@@ -131,29 +134,54 @@ func (s *Store) ApplyMemoryDiff(
 		}
 	}
 
-	// update: set content+tags, bump updated_at, expires_at, source_event_ids.
+	// update: set content+tags+embedding (if provided), bump updated_at, expires_at, source_event_ids.
 	for _, op := range diff.Update {
 		tagsJSON := tagsToJSON(op.Tags)
 		var q string
 		var args []any
-		if newExpiresAt != nil {
-			q = `UPDATE memories
-			     SET content          = $2,
-			         tags             = $3,
-			         updated_at       = $4,
-			         expires_at       = $5,
-			         source_event_ids = array_append(source_event_ids, $6::uuid)
-			   WHERE memory_id = $1`
-			args = []any{op.ID, op.Content, tagsJSON, now, *newExpiresAt, opts.SourceEventID}
+		if op.Embedding != nil {
+			embVal := pgvector.NewVector(op.Embedding)
+			if newExpiresAt != nil {
+				q = `UPDATE memories
+				     SET content          = $2,
+				         tags             = $3,
+				         updated_at       = $4,
+				         expires_at       = $5,
+				         embedding        = $6,
+				         source_event_ids = array_append(source_event_ids, $7::uuid)
+				   WHERE memory_id = $1`
+				args = []any{op.ID, op.Content, tagsJSON, now, *newExpiresAt, embVal, opts.SourceEventID}
+			} else {
+				q = `UPDATE memories
+				     SET content          = $2,
+				         tags             = $3,
+				         updated_at       = $4,
+				         expires_at       = NULL,
+				         embedding        = $5,
+				         source_event_ids = array_append(source_event_ids, $6::uuid)
+				   WHERE memory_id = $1`
+				args = []any{op.ID, op.Content, tagsJSON, now, embVal, opts.SourceEventID}
+			}
 		} else {
-			q = `UPDATE memories
-			     SET content          = $2,
-			         tags             = $3,
-			         updated_at       = $4,
-			         expires_at       = NULL,
-			         source_event_ids = array_append(source_event_ids, $5::uuid)
-			   WHERE memory_id = $1`
-			args = []any{op.ID, op.Content, tagsJSON, now, opts.SourceEventID}
+			if newExpiresAt != nil {
+				q = `UPDATE memories
+				     SET content          = $2,
+				         tags             = $3,
+				         updated_at       = $4,
+				         expires_at       = $5,
+				         source_event_ids = array_append(source_event_ids, $6::uuid)
+				   WHERE memory_id = $1`
+				args = []any{op.ID, op.Content, tagsJSON, now, *newExpiresAt, opts.SourceEventID}
+			} else {
+				q = `UPDATE memories
+				     SET content          = $2,
+				         tags             = $3,
+				         updated_at       = $4,
+				         expires_at       = NULL,
+				         source_event_ids = array_append(source_event_ids, $5::uuid)
+				   WHERE memory_id = $1`
+				args = []any{op.ID, op.Content, tagsJSON, now, opts.SourceEventID}
+			}
 		}
 		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
 			return fmt.Errorf("ApplyMemoryDiff update %s: %w", op.ID, err)
@@ -175,14 +203,18 @@ func (s *Store) ApplyMemoryDiff(
 		if newExpiresAt != nil {
 			expiresVal = *newExpiresAt
 		}
+		var embVal interface{}
+		if op.Embedding != nil {
+			embVal = pgvector.NewVector(op.Embedding)
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO memories (
 				memory_id, actor_id, dimension, namespace, content,
 				tags, attributes, source_event_ids, reinforced_count,
-				created_at, updated_at, expires_at
-			) VALUES ($1, $2, $3, $4, $5, $6, '{}', ARRAY[$7::uuid], 1, $8, $8, $9)
+				created_at, updated_at, expires_at, embedding
+			) VALUES ($1, $2, $3, $4, $5, $6, '{}', ARRAY[$7::uuid], 1, $8, $8, $9, $10)
 		`, id, opts.ActorID, opts.Dimension, opts.Namespace, op.Content,
-			tagsJSON, opts.SourceEventID, now, expiresVal)
+			tagsJSON, opts.SourceEventID, now, expiresVal, embVal)
 		if err != nil {
 			return fmt.Errorf("ApplyMemoryDiff insert: %w", err)
 		}

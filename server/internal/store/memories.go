@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lib/pq"
+	"github.com/pgvector/pgvector-go"
 )
 
 // Memory is the read-side representation of a memory item row.
@@ -38,6 +39,7 @@ type MemoryInput struct {
 	Content       string
 	Attributes    json.RawMessage
 	SourceEventID *uuid.UUID
+	Embedding     []float32 // optional; nil = embedding column stays NULL
 }
 
 // ItemInput is the canonical write-side input for inserting a new item.
@@ -50,10 +52,12 @@ type ItemInput struct {
 	Attributes    json.RawMessage
 	SourceEventID uuid.UUID
 	ExpiresAt     sql.NullTime
+	Embedding     []float32 // optional; nil means embedding column stays NULL
 }
 
-// InsertItem writes a new memory item row. Embedding is NULL; Stage 3 adds
-// the embedding hook. ExpiresAt may be sql.NullTime{} for "never expires".
+// InsertItem writes a new memory item row. If in.Embedding is non-nil, it is
+// written to the embedding column; otherwise embedding stays NULL and the
+// backfill job will populate it later.
 func (s *Store) InsertItem(ctx context.Context, tx *sql.Tx, in ItemInput) (uuid.UUID, error) {
 	id := uuid.New()
 	attrs := in.Attributes
@@ -70,14 +74,19 @@ func (s *Store) InsertItem(ctx context.Context, tx *sql.Tx, in ItemInput) (uuid.
 		expiresAt = in.ExpiresAt.Time
 	}
 
+	var embVal interface{}
+	if in.Embedding != nil {
+		embVal = pgvector.NewVector(in.Embedding)
+	}
+
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO memories (
 			memory_id, actor_id, dimension, namespace, content,
 			tags, attributes, source_event_ids, reinforced_count,
-			expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, ARRAY[$8::uuid], 1, $9)
+			expires_at, embedding
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, ARRAY[$8::uuid], 1, $9, $10)
 	`, id, in.ActorID, in.Dimension, in.Namespace, in.Content,
-		tags, attrs, in.SourceEventID, expiresAt)
+		tags, attrs, in.SourceEventID, expiresAt, embVal)
 	return id, err
 }
 
@@ -98,6 +107,7 @@ func (s *Store) InsertAppendMemory(ctx context.Context, tx *sql.Tx, m MemoryInpu
 		Tags:          tags,
 		Attributes:    attrs,
 		SourceEventID: eventID,
+		Embedding:     m.Embedding,
 	}
 	_, err := s.InsertItem(ctx, tx, in)
 	return err

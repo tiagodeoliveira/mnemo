@@ -14,6 +14,7 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/auth"
 	"github.com/tiagodeoliveira/mnemo/server/internal/config"
 	"github.com/tiagodeoliveira/mnemo/server/internal/digest"
+	"github.com/tiagodeoliveira/mnemo/server/internal/embed"
 	"github.com/tiagodeoliveira/mnemo/server/internal/extract"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/meeting"
@@ -69,8 +70,23 @@ func main() {
 		llmClient = &llm.Anthropic{APIKey: cfg.AnthropicAPIKey}
 	}
 
-	extractHandler := &extract.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
-	meetingHandler := &meeting.Handler{Store: s, LLM: llmClient, Model: cfg.LLMModel}
+	// Embed client construction.
+	var embedClient embed.Client
+	if cfg.EmbedDisabled {
+		embedClient = &embed.Stub{}
+		logger.Warn("MNEMO_EMBED_DISABLED=1: using stub embeddings (search will return 503)")
+	} else {
+		embedClient = &embed.OpenAI{APIKey: cfg.OpenAIAPIKey, Model: cfg.EmbedModel}
+	}
+
+	extractHandler := &extract.Handler{
+		Store: s, LLM: llmClient, Model: cfg.LLMModel,
+		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
+	}
+	meetingHandler := &meeting.Handler{
+		Store: s, LLM: llmClient, Model: cfg.LLMModel,
+		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
+	}
 	mailer := &digest.Mailer{
 		Host: cfg.SMTPHost,
 		User: cfg.SMTPUser,
@@ -79,12 +95,17 @@ func main() {
 	}
 	digestHandler := &digest.Handler{
 		Store: s, LLM: llmClient, Model: cfg.LLMModel, Mailer: mailer,
+		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
+	}
+	backfillHandler := &queue.BackfillEmbeddingsHandler{
+		Store: s, Embed: embedClient, Logger: logger,
 	}
 
 	handlers := map[store.JobKind]queue.Handler{
-		store.KindExtractContext:  extractHandler.Handle,
-		store.KindFinalizeMeeting: meetingHandler.Handle,
-		store.KindDailyDigest:     digestHandler.Handle,
+		store.KindExtractContext:     extractHandler.Handle,
+		store.KindFinalizeMeeting:    meetingHandler.Handle,
+		store.KindDailyDigest:        digestHandler.Handle,
+		store.KindBackfillEmbeddings: backfillHandler.Handle,
 	}
 	registered := make([]string, 0, len(handlers))
 	for k := range handlers {
@@ -100,13 +121,39 @@ func main() {
 
 	go queue.Sweeper(ctx, s, logger, 7*24*time.Hour, time.Hour)
 
+	// Backfill embeddings scheduler: runs every 5 minutes.
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				tx, err := s.DB.BeginTx(ctx, nil)
+				if err != nil {
+					logger.Warn("backfill scheduler: begin tx", "err", err)
+					continue
+				}
+				if err := s.EnqueueJob(ctx, tx, store.KindBackfillEmbeddings, map[string]any{}); err != nil {
+					_ = tx.Rollback()
+					logger.Warn("backfill scheduler: enqueue", "err", err)
+					continue
+				}
+				_ = tx.Commit()
+			}
+		}
+	}()
+
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,
 		Handler: api.NewRouter(api.Deps{
-			Store:        s,
-			Logger:       logger,
-			AuthVerifier: verifier,
-			DevActorID:   "dev-actor",
+			Store:         s,
+			Logger:        logger,
+			AuthVerifier:  verifier,
+			DevActorID:    "dev-actor",
+			EmbedClient:   embedClient,
+			EmbedDisabled: cfg.EmbedDisabled,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
