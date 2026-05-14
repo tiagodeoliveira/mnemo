@@ -17,7 +17,7 @@ type Config struct {
 
 	LLMDisabled      bool   `env:"MNEMO_LLM_DISABLED"`
 	AnthropicAPIKey  string `env:"ANTHROPIC_API_KEY"`
-	LLMModel         string `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-7-20251015"`
+	LLMModel         string `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
 
 	SMTPHost         string `env:"SMTP_HOST"`
 	SMTPUser         string `env:"SMTP_USER"`

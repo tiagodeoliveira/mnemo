@@ -64,6 +64,13 @@ func (p *Pool) loop(ctx context.Context, id string) {
 		}
 		h, ok := p.handlers[j.Kind]
 		if !ok {
+			known := make([]string, 0, len(p.handlers))
+			for k := range p.handlers {
+				known = append(known, string(k))
+			}
+			p.logger.Error("no handler for kind",
+				"worker", id, "kind", string(j.Kind), "kind_len", len(j.Kind),
+				"known", known, "known_count", len(p.handlers))
 			_ = p.store.FailJob(ctx, j.JobID, j.Attempts, "no handler for kind: "+string(j.Kind), 0, 1)
 			continue
 		}

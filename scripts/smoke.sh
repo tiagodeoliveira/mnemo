@@ -24,7 +24,7 @@
 #   MNEMO_SMOKE_TIMEOUT  — seconds to wait for jobs to drain (default 180)
 #   MNEMO_SMOKE_KEEP=1   — leave Postgres + the server running at the end
 #                          for manual inspection. Default: stop both.
-#   MNEMO_LLM_MODEL      — override the Claude model (default claude-sonnet-4-7-20251015)
+#   MNEMO_LLM_MODEL      — override the Claude model (default claude-sonnet-4-6)
 #
 # Why "presence + keyword" rather than exact-content checks?
 #   LLM output is non-deterministic. The keywords we plant are
@@ -40,7 +40,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PORT="${MNEMO_SMOKE_PORT:-8080}"
 TIMEOUT="${MNEMO_SMOKE_TIMEOUT:-180}"
 KEEP="${MNEMO_SMOKE_KEEP:-0}"
-MODEL="${MNEMO_LLM_MODEL:-claude-sonnet-4-7-20251015}"
+MODEL="${MNEMO_LLM_MODEL:-claude-sonnet-4-6}"
 
 RUN_ID="smoke-$(date +%s)"
 ACTOR="dev-actor"

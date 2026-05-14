@@ -86,6 +86,11 @@ func main() {
 		store.KindFinalizeMeeting: meetingHandler.Handle,
 		store.KindDailyDigest:     digestHandler.Handle,
 	}
+	registered := make([]string, 0, len(handlers))
+	for k := range handlers {
+		registered = append(registered, string(k))
+	}
+	logger.Info("worker pool starting", "workers", cfg.WorkerCount, "handlers", registered)
 	pool := queue.NewPool(s, logger, cfg.WorkerCount, handlers)
 	poolDone := make(chan struct{})
 	go func() { pool.Run(ctx); close(poolDone) }()
