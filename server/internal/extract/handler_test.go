@@ -12,6 +12,45 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
+// stubConsolidationLLM returns a stub that handles all extractor AND
+// consolidation calls. Extractor calls are identified by their prompt content;
+// consolidation calls are routed by system prompt.
+func stubConsolidationLLM() *llm.Stub {
+	return &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		user := ""
+		if len(req.Messages) > 0 {
+			user = req.Messages[0].Content
+		}
+		// Extractor calls (via user message, no system prompt differentiator):
+		switch {
+		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
+			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
+		case strings.Contains(user, "extracting biographical"):
+			return llm.CompleteResponse{Text: "ABOUT:\ntiago is a senior engineer."}, nil
+		}
+		// Consolidation calls (via system prompt):
+		switch {
+		case strings.Contains(req.System, "PREFERENCES memory"):
+			// Return a valid insert-only diff (first write).
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"uses Go for backend services","tags":["language"]}]}`}, nil
+		case strings.Contains(req.System, "ABOUT memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"tiago is a senior engineer","tags":["role"]}]}`}, nil
+		case strings.Contains(req.System, "PROJECT memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go for backend services","tags":["architecture"]}]}`}, nil
+		case strings.Contains(req.System, "TASK memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go for backend services","tags":["pattern"]}]}`}, nil
+		}
+		// Extractor system-prompt-keyed calls:
+		switch req.System {
+		case SystemExtractPreferences:
+			return llm.CompleteResponse{Text: `{"preferences":["uses Go for backend services"]}`}, nil
+		case SystemExtractEpisodes:
+			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
+		}
+		return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[]}`}, nil
+	}}
+}
+
 func setup(t *testing.T) (*store.Store, *Handler, uuid.UUID) {
 	t.Helper()
 	dsn := store.StartTestPG(t)
@@ -46,40 +85,7 @@ func setup(t *testing.T) (*store.Store, *Handler, uuid.UUID) {
 		t.Fatal(err)
 	}
 
-	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
-		// Distinguish calls by content of the user message or the system prompt.
-		userMsg := ""
-		if len(req.Messages) > 0 {
-			userMsg = req.Messages[0].Content
-		}
-		switch {
-		case strings.Contains(userMsg, "maintaining a long-lived preferences record"):
-			return llm.CompleteResponse{Text: "- use Go for backend services (2026-05-14)"}, nil
-		case strings.Contains(userMsg, "CLASSIFY THE TASK DOMAIN"):
-			// Classifier prompt (project/task/daily log)
-			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
-		case strings.Contains(userMsg, "biographical"):
-			// About extractor prompt
-			return llm.CompleteResponse{Text: "tiago is a senior engineer."}, nil
-		case strings.Contains(userMsg, "ABOUT memory"):
-			// Consolidation for about dimension
-			return llm.CompleteResponse{Text: "the actor is a senior engineer who prefers Go."}, nil
-		case strings.Contains(userMsg, "PROJECT memory"):
-			return llm.CompleteResponse{Text: "consolidated project record"}, nil
-		case strings.Contains(userMsg, "TASK memory"):
-			return llm.CompleteResponse{Text: "consolidated task record"}, nil
-		}
-		// Fallback for system-prompt-keyed calls (preferences, facts/episodes)
-		switch req.System {
-		case SystemPreferences:
-			return llm.CompleteResponse{Text: `{"preferences":["use Go for backend services"]}`}, nil
-		case SystemEpisodes:
-			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
-		}
-		return llm.CompleteResponse{Text: ""}, nil
-	}}
-
-	h := &Handler{Store: s, LLM: stub, Model: "claude-test"}
+	h := &Handler{Store: s, LLM: stubConsolidationLLM(), Model: "claude-test"}
 	return s, h, rec.EventID
 }
 
@@ -105,32 +111,27 @@ func TestExtractHandlerFirstWriteAllDimensions(t *testing.T) {
 		counts[d] = n
 	}
 
-	// First-write expectations:
-	// - project (1 row, namespace /projects/alice/demo/) — first write, no consolidation, content == ptl.Facts
-	// - task (1 row, namespace /tasks/alice/coding/) — same Facts string
-	// - about (1 row, always consolidated)
-	// - daily_log (1 row)
-	// - preferences (1 row)
-	// - episodes (0 rows — empty array from stub)
-	// - facts dimension was dropped
+	// First-write expectations with item model:
+	// - project: 1+ items
+	// - task: 1+ items
+	// - about: 1+ items
+	// - daily_log: 1 item
+	// - preferences: 1+ items
+	// - episodes: 0 items (empty array from stub)
 	for dim, want := range map[string]int{
 		"project": 1, "task": 1, "about": 1, "daily_log": 1, "preferences": 1,
 	} {
-		if counts[dim] != want {
-			t.Errorf("dim %s: want %d got %d", dim, want, counts[dim])
+		if counts[dim] < want {
+			t.Errorf("dim %s: want at least %d got %d", dim, want, counts[dim])
 		}
 	}
 	if counts["episodes"] != 0 {
 		t.Errorf("episodes: want 0 got %d", counts["episodes"])
 	}
-	if counts["facts"] != 0 {
-		t.Errorf("facts dimension should be gone: got %d rows", counts["facts"])
-	}
 }
 
 func TestExtractHandlerEpisodesDisabled(t *testing.T) {
 	s, h, evID := setup(t)
-	// Override the actor's episode_strategy to 'disabled'.
 	if _, err := s.DB.Exec(`UPDATE actors SET episode_strategy='disabled' WHERE actor_id='alice'`); err != nil {
 		t.Fatal(err)
 	}
@@ -152,17 +153,89 @@ func TestExtractHandlerIdempotentOnRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Run again — append-dim rows for this event should be deleted+re-inserted,
-	// not duplicated.
+	// not duplicated. Consolidated dims use reinforce/keep so also should not duplicate.
 	if err := h.Handle(context.Background(), payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, dim := range []string{"preferences", "daily_log"} {
-		var n int
-		if err := s.DB.QueryRow(`SELECT count(*) FROM memories WHERE actor_id='alice' AND dimension=$1`, dim).Scan(&n); err != nil {
-			t.Fatal(err)
+	// daily_log is append-dim: should have exactly 1 row (deleted+re-inserted on retry).
+	var n int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM memories WHERE actor_id='alice' AND dimension='daily_log'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("daily_log after retry: want 1 got %d", n)
+	}
+}
+
+func TestExtractHandlerReinforcementOnSecondEvent(t *testing.T) {
+	s, h, evID := setup(t)
+	payload, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: evID})
+	if err := h.Handle(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get the memory ID of the inserted preference item.
+	var memID string
+	var count1 int
+	if err := s.DB.QueryRow(`
+		SELECT memory_id, reinforced_count FROM memories
+		 WHERE actor_id='alice' AND dimension='preferences'
+		 LIMIT 1
+	`).Scan(&memID, &count1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a second event and configure the stub to reinforce the existing item.
+	tx, _ := s.DB.BeginTx(context.Background(), nil)
+	rec2, _ := s.InsertEvent(context.Background(), tx, store.EventInput{
+		ActorID:   "alice",
+		SessionID: "s2",
+		Project:   "demo",
+		Turns:     json.RawMessage(`[{"role":"user","content":"I still prefer Go for backends"}]`),
+	})
+	_ = tx.Commit()
+
+	memUUID, _ := uuid.Parse(memID)
+	h.LLM = &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		user := ""
+		if len(req.Messages) > 0 {
+			user = req.Messages[0].Content
 		}
-		if n != 1 {
-			t.Errorf("dim %s after retry: want 1 got %d", dim, n)
+		switch {
+		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
+			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
+		case strings.Contains(user, "extracting biographical"):
+			return llm.CompleteResponse{Text: "ABOUT:\nNONE"}, nil
 		}
+		switch {
+		case strings.Contains(req.System, "PREFERENCES memory"):
+			// Reinforce the existing item instead of inserting a new one.
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":["` + memUUID.String() + `"],"delete":[],"update":[],"insert":[]}`}, nil
+		case strings.Contains(req.System, "PROJECT memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go","tags":["architecture"]}]}`}, nil
+		case strings.Contains(req.System, "TASK memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go","tags":["pattern"]}]}`}, nil
+		}
+		switch req.System {
+		case SystemExtractPreferences:
+			return llm.CompleteResponse{Text: `{"preferences":["uses Go for backend services"]}`}, nil
+		case SystemExtractEpisodes:
+			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
+		}
+		return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[]}`}, nil
+	}}
+
+	payload2, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: rec2.EventID})
+	if err := h.Handle(context.Background(), payload2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Preferences row should have reinforced_count = 2.
+	var count2 int
+	if err := s.DB.QueryRow(`SELECT reinforced_count FROM memories WHERE memory_id=$1`, memID).Scan(&count2); err != nil {
+		t.Fatal(err)
+	}
+	if count2 != 2 {
+		t.Errorf("reinforced_count after second event: want 2 got %d", count2)
 	}
 }

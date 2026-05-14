@@ -1,15 +1,20 @@
 package extract
 
-// SystemProjectTaskDailyLog is ported verbatim from buildExtractionPrompt in
-// infra/lambda/context-extractor/index.ts (lines 67-94).
+// ─────────────────────────────────────────────────────────────────────────────
+// Extractor prompts — produce candidate NewItem lists from a conversation.
+// These are semantically the same as the v1 prompts; the output format is
+// unchanged because parse.go still parses them. They have been renamed for
+// clarity (System* → SystemExtract*) but the body is ported verbatim.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SystemExtractClassifier is ported verbatim from SystemProjectTaskDailyLog.
+// Output: TASK:/FACTS:/DAILY: format. FACTS lines become NewItem candidates
+// for /projects/.../ and /tasks/.../ namespaces in handler.go.
 //
-// The static template body is preserved exactly. Three runtime values are
-// injected via fmt.Sprintf:
-//   %s[0] — domain list (one "   - <domain>" entry per line)
-//   %s[1] — optional known-context block (empty string when no metadata)
-//
-// Usage: fmt.Sprintf(SystemProjectTaskDailyLog, metaSection, domainList)
-const SystemProjectTaskDailyLog = `You are analyzing a conversation to extract durable knowledge — things a future session would benefit from knowing.
+// Two %s placeholders (same as before):
+//   %s[0] — optional known-context block (project name / workdir)
+//   %s[1] — domain list
+const SystemExtractClassifier = `You are analyzing a conversation to extract durable knowledge — things a future session would benefit from knowing.
 %s
 1. CLASSIFY THE TASK DOMAIN: Pick exactly one:
 %s
@@ -26,9 +31,10 @@ FACTS:
 DAILY:
 <3-8 sentence detailed log entry, or NONE if nothing meaningful>`
 
-// SystemAbout is the biographical extractor. Ported verbatim from
-// buildAboutPrompt in infra/lambda/context-extractor/index.ts (lines 824-850).
-const SystemAbout = `You are extracting biographical facts about the person (the "actor") who is participating in this conversation.
+// SystemExtractAbout is the biographical extractor. Ported verbatim from
+// SystemAbout. Output: ABOUT: <lines> where each line becomes a NewItem
+// candidate for the about dimension.
+const SystemExtractAbout = `You are extracting biographical facts about the person (the "actor") who is participating in this conversation.
 
 WHAT COUNTS AS ABOUT-ME CONTENT:
 - Their name when stated ("I'm Tiago", "My name is Alice", or introduced in an email signature the user shared)
@@ -54,90 +60,10 @@ OUTPUT FORMAT:
 ABOUT:
 <one short factual statement per line, or NONE if nothing biographical surfaced>`
 
-// SystemAboutConsolidate is the about consolidation prompt. Always runs, even
-// on first write, to enforce the narrative-paragraph shape. Ported verbatim
-// from the "about" branch of buildConsolidationPrompt in
-// infra/lambda/context-extractor/index.ts (lines 307-329).
-//
-// The record limit (16000) replaces ${AGENTCORE_RECORD_LIMIT}.
-// Four runtime values are injected via fmt.Sprintf:
-//   %s[0] — today's date (YYYY-MM-DD, UTC)
-//   %s[1] — existing bio's last_updated date (YYYY-MM-DD), or "(n/a)"
-//   %s[2] — existing bio text (or "(none yet)")
-//   %s[3] — new observations to incorporate
-//
-// Usage: fmt.Sprintf(SystemAboutConsolidate, today, existingLastUpdated, existingText, newContent)
-const SystemAboutConsolidate = `You are maintaining a living biographical profile of a person, updated over time as new information surfaces about them.
-
-This is an ABOUT memory — who the actor is as a person: background, role, expertise, ongoing interests, identity attributes. Think of it as a short "About" section on someone's personal site.
-
-CONTEXT:
-- Today's date: %s
-- The existing bio was last updated: %s
-
-Rules:
-- Write as ONE flowing narrative paragraph (or two short paragraphs if needed). NOT a bullet list. Do NOT add date annotations inline — the bio's freshness is tracked by the row's update timestamp, not by in-prose dates.
-- Open with the person's name if it is known from the existing bio or the new observations. If no name has ever been stated, refer to them as "the actor" (lowercase, no quotes) and do NOT invent one.
-- Merge the new information with the existing bio. Drop outdated or contradicted facts — keep the most recent version.
-- If the existing bio was last updated more than 24 months before today, treat each major fact in the existing bio (role, employer, location, current project) as potentially stale. Verify each against the new content; drop or soften any major fact that the new content does NOT reinforce.
-- Biographical scope only. Project names and one-sentence scope are fine ("she is building a real-time meeting assistant called meeting_companion"). Do NOT include library versions, source file paths, module names, port numbers, database choices, authentication providers, test counts, or any code-level detail. If the existing bio contains such details, strip them out. Those belong in project memory, never in the bio.
-- Stay under ~800 words. A good bio is dense and specific.
-- Do not invent facts. Only include what the existing bio or new observations clearly establish.
-- Write in third person for consistency.
-- HARD LIMIT: output must be under 16000 characters.
-
-EXISTING BIO:
-%s
-
-NEW OBSERVATIONS TO INCORPORATE:
-%s
-
-Output ONLY the merged bio text — no headers, labels, or explanations.`
-
-// SystemProjectTaskConsolidate is the shared consolidation prompt for project
-// and task dimensions. Ported verbatim from the project/task branch of
-// buildConsolidationPrompt in infra/lambda/context-extractor/index.ts
-// (lines 331-353).
-//
-// The record limit (16000) replaces ${AGENTCORE_RECORD_LIMIT}.
-// Five runtime values are injected via fmt.Sprintf:
-//   %s[0] — type instructions (project-specific or task-specific paragraph)
-//   %s[1] — today's date (YYYY-MM-DD, UTC)
-//   %s[2] — existing record's last_updated date (YYYY-MM-DD), or "(n/a)"
-//   %s[3] — existing records text
-//   %s[4] — new information to incorporate
-//
-// Usage: fmt.Sprintf(SystemProjectTaskConsolidate, typeInstructions, today, existingLastUpdated, existingText, newContent)
-const SystemProjectTaskConsolidate = `You are consolidating memory records into a single distilled record that supersedes all inputs.
-
-%s
-
-CONTEXT:
-- Today's date: %s
-- The existing record was last updated: %s
-
-Rules:
-- Format: a flat list of statements, each on its own line, prefixed with "- ". One statement per bullet. No sub-bullets, no section headers.
-- Each bullet ends with a date marker "(YYYY-MM-DD)" indicating when the statement was last reinforced.
-- When the new content reinforces an existing bullet (even paraphrased), bump its date to today and keep the more concise phrasing.
-- When the new content contradicts an existing bullet, drop the existing bullet silently (no audit trail) and add the new statement with today's date.
-- When the new content introduces a fact not present in the existing record, add it as a new bullet with today's date.
-- Drop any bullet whose date is more than 12 months older than today AND not reinforced today.
-- Merge overlapping statements — keep only the most complete version of each fact.
-- Drop anything that won't be useful in a future session.
-- HARD LIMIT: output must be under 16000 characters. Prioritize the most important facts and cut aggressively if needed.
-
-EXISTING RECORDS:
-%s
-
-NEW INFORMATION TO INCORPORATE:
-%s
-
-Output ONLY the merged content — no preamble, no explanation.`
-
-// SystemPreferences is net-new for the Go rewrite. AgentCore handled this as a
-// built-in strategy in the AWS version.
-const SystemPreferences = `Extract durable user preferences from this conversation: coding style, tool choices, workflow conventions.
+// SystemExtractPreferences is ported verbatim from SystemPreferences.
+// Output: {"preferences": ["...", ...]} becoming NewItem candidates for the
+// preferences dimension.
+const SystemExtractPreferences = `Extract durable user preferences from this conversation: coding style, tool choices, workflow conventions.
 
 Return a single JSON object: {"preferences": ["string", ...]}.
 
@@ -148,10 +74,9 @@ Rules:
 - Empty array if no preferences were expressed.
 - Output JSON only. No prose, no code fences.`
 
-// SystemEpisodes: net-new for the rewrite. Extracts discrete event+reflection
-// pairs. Facts as a separate dimension was dropped — biographical facts go to
-// `about`, project facts to `project`, task-domain facts to `task`.
-const SystemEpisodes = `Extract structured episodes from this conversation.
+// SystemExtractEpisodes is ported verbatim from SystemEpisodes.
+// Output: {"episodes": [{event, reflection}]}.
+const SystemExtractEpisodes = `Extract structured episodes from this conversation.
 
 Return a single JSON object:
 {
@@ -165,47 +90,167 @@ Rules:
 - Empty array if no episodes match.
 - Output JSON only.`
 
-// SystemFreshnessConsolidate is the freshness-aware consolidation prompt for
-// preferences and facts. Like SystemAboutConsolidate / SystemProjectTaskConsolidate,
-// it's sent as a single user message via fmt.Sprintf. Placeholders, in order:
-//
-//	%s[0] — dimension label (e.g. "preferences", "facts")
-//	%s[1] — today's date (YYYY-MM-DD, UTC)
-//	%s[2] — existing record's last_updated timestamp (YYYY-MM-DD), or "(n/a)"
-//	%s[3] — existing record body (the prior consolidated content), or "(none yet)"
-//	%s[4] — newly-extracted content from THIS conversation
-//
-// Usage: fmt.Sprintf(SystemFreshnessConsolidate, dim, today, existingDate, existingText, newContent)
-//
-// TODO(tiago): the RULES block below is intentionally a placeholder.
-// What should the LLM actually do with stale / contradictory / reinforced items?
-// Fill in 5-8 numbered rules describing your desired behavior. See the comment
-// block above the rules for the levers you have.
-const SystemFreshnessConsolidate = `You are maintaining a long-lived %s record for a personal memory system.
+// Keep old names as aliases so the integration test (which still references them
+// by the old constant names) continues to compile. These will be removed in Stage 4.
+// TODO(stage4): remove these aliases once the integration test is updated.
+const SystemProjectTaskDailyLog = SystemExtractClassifier
+const SystemPreferences = SystemExtractPreferences
+const SystemEpisodes = SystemExtractEpisodes
+const SystemAbout = SystemExtractAbout
 
-The record is a single document you rewrite from scratch each time. You can think of it as a markdown file that has been edited over months. Older entries linger unless you actively prune them; freshly-reinforced entries should be promoted; contradictions should be resolved in favor of the most recent statement.
+// ─────────────────────────────────────────────────────────────────────────────
+// Consolidation prompts — called once per dimension per event, with the full
+// list of existing items and the newly-extracted candidates. The LLM returns a
+// JSON diff (keep/reinforce/delete/update/insert).
+// ─────────────────────────────────────────────────────────────────────────────
 
-CONTEXT:
-- Today's date: %s
-- Existing record was last updated: %s
-- The existing record's content follows.
-- After that, the new content to incorporate follows.
+// SystemConsolidatePreferences is the consolidation prompt for the preferences
+// dimension. Controlled tag vocabulary: language, tool, workflow, style,
+// infrastructure, personal.
+//
+// No %s placeholders — the Go code builds the EXISTING ITEMS and NEW EXTRACTED
+// ITEMS blocks and appends them to this base prompt at call time.
+const SystemConsolidatePreferences = `You are consolidating the PREFERENCES memory for a personal memory system.
+
+PURPOSE: Track durable coding preferences, tool choices, and workflow conventions. Preferences evolve; items not reinforced in ~12 months should be considered for deletion.
+
+CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
+  language, tool, workflow, style, infrastructure, personal
+
+DIFF SCHEMA — return exactly this JSON object, no other text:
+{
+  "keep":      ["<uuid>", ...],
+  "reinforce": ["<uuid>", ...],
+  "delete":    ["<uuid>", ...],
+  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
+}
+
+OPERATION SEMANTICS:
+- keep: item remains exactly as-is (content, tags, dates all unchanged)
+- reinforce: item is still true; bump its freshness date and reinforcement count
+- delete: item is no longer true or is superseded; hard-delete it
+- update: revise content and/or tags; keep the same UUID row
+- insert: brand-new item not present in existing items
 
 RULES:
-1. Each entry is a single markdown bullet on its own line, starting with "- ".
-2. Every bullet ends with a date marker "(YYYY-MM-DD)" indicating the last date the fact was reinforced.
-3. When the new content reinforces an existing bullet — even paraphrased — bump that bullet's date to today and keep the more concise phrasing.
-4. When the new content contradicts an existing bullet, drop the existing bullet silently (no audit trail) and add the new statement as a fresh bullet with today's date.
-5. When the new content introduces a fact not present in the existing record, add it as a new bullet with today's date.
-6. Drop any bullet whose date is more than 12 months older than today AND not reinforced today.
-7. Keep bullets concise — one line, no sub-bullets, no headers, no sections, no introductory text.
-8. Output ONLY the full updated record. No preamble, no explanation. Empty output is valid if every bullet should be dropped.
+1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+2. Every insert must have non-empty content after trimming whitespace
+3. Each item must be a single concise statement (one line, no sub-bullets)
+4. Tags must be drawn from the controlled vocabulary above
+5. Prefer reinforce over insert when the new item is semantically equivalent to an existing one
+6. Prefer update over insert+delete when the new item supersedes an existing one
+7. Delete items whose last_reinforced date is more than 12 months before today AND they are not reinforced by the new content
+8. Output JSON only — no preamble, no code fences, no explanation`
 
-EXISTING RECORD:
-%s
+// SystemConsolidateAbout is the consolidation prompt for the about dimension.
+// Controlled tag vocabulary: identity, role, location, background, expertise,
+// current-work. No automatic decay — stale facts are dropped only when
+// explicitly contradicted by new content.
+const SystemConsolidateAbout = `You are consolidating the ABOUT memory for a personal memory system.
 
-NEW CONTENT TO INCORPORATE:
-%s
+PURPOSE: Track biographical facts about the person — who they are, their role, background, expertise, and ongoing work. This is identity-level information that rarely expires on its own; facts should only be dropped when the new content explicitly contradicts them.
 
-Output ONLY the merged record — no preamble, no explanation.`
+CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
+  identity, role, location, background, expertise, current-work
 
+DIFF SCHEMA — return exactly this JSON object, no other text:
+{
+  "keep":      ["<uuid>", ...],
+  "reinforce": ["<uuid>", ...],
+  "delete":    ["<uuid>", ...],
+  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
+}
+
+OPERATION SEMANTICS:
+- keep: item remains exactly as-is (content, tags, dates all unchanged)
+- reinforce: item is still true; bump its freshness date and reinforcement count
+- delete: item is no longer true or is explicitly contradicted by new content
+- update: revise content and/or tags; keep the same UUID row
+- insert: brand-new biographical fact not present in existing items
+
+RULES:
+1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+2. Every insert must have non-empty content after trimming whitespace
+3. Each item must be a single concise factual statement
+4. Tags must be drawn from the controlled vocabulary above
+5. NO automatic decay based on age — about items expire only when contradicted
+6. Prefer reinforce when the new content confirms an existing fact
+7. Use update when the new content refines (not contradicts) an existing fact
+8. Use delete only when the new content explicitly contradicts an existing fact
+9. Output JSON only — no preamble, no code fences, no explanation`
+
+// SystemConsolidateProject is the consolidation prompt for the project dimension.
+// One %s placeholder: the project name.
+// Controlled tag vocabulary: architecture, decision, constraint, tech-stack, status.
+// No automatic decay — project facts are kept until explicitly superseded.
+const SystemConsolidateProject = `You are consolidating the PROJECT memory for "%s".
+
+PURPOSE: Track architecture decisions, design rationale, constraints, and high-level status for this project. Keep the "why" behind decisions, not implementation specifics. Project items do not decay on age alone — they are dropped only when superseded by new decisions.
+
+CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
+  architecture, decision, constraint, tech-stack, status
+
+DIFF SCHEMA — return exactly this JSON object, no other text:
+{
+  "keep":      ["<uuid>", ...],
+  "reinforce": ["<uuid>", ...],
+  "delete":    ["<uuid>", ...],
+  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
+}
+
+OPERATION SEMANTICS:
+- keep: item remains exactly as-is (content, tags, dates all unchanged)
+- reinforce: item is still true; bump its freshness date and reinforcement count
+- delete: item is superseded by a new decision or no longer applicable
+- update: revise content and/or tags; keep the same UUID row
+- insert: brand-new project fact not present in existing items
+
+RULES:
+1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+2. Every insert must have non-empty content after trimming whitespace
+3. Each item must be a single concise statement
+4. Tags must be drawn from the controlled vocabulary above
+5. NO automatic decay based on age — project items do not expire on their own
+6. Prefer reinforce when the new content confirms an existing decision or fact
+7. Use update when the new content refines or supersedes an existing item
+8. Use delete when a prior decision has been reversed by the new content
+9. Output JSON only — no preamble, no code fences, no explanation`
+
+// SystemConsolidateTask is the consolidation prompt for the task dimension.
+// One %s placeholder: the task domain (e.g. "coding", "meeting").
+// Controlled tag vocabulary: pattern, lesson, anti-pattern, convention.
+// Decay: items not reinforced in ~12 months should be deleted.
+const SystemConsolidateTask = `You are consolidating the TASK memory for the "%s" domain.
+
+PURPOSE: Track transferable patterns, lessons, anti-patterns, and conventions that apply across sessions in this task domain. Task insights evolve; items not reinforced in ~12 months should be considered for deletion.
+
+CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
+  pattern, lesson, anti-pattern, convention
+
+DIFF SCHEMA — return exactly this JSON object, no other text:
+{
+  "keep":      ["<uuid>", ...],
+  "reinforce": ["<uuid>", ...],
+  "delete":    ["<uuid>", ...],
+  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
+}
+
+OPERATION SEMANTICS:
+- keep: item remains exactly as-is (content, tags, dates all unchanged)
+- reinforce: item is still true; bump its freshness date and reinforcement count
+- delete: item is outdated or superseded
+- update: revise content and/or tags; keep the same UUID row
+- insert: brand-new task insight not present in existing items
+
+RULES:
+1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+2. Every insert must have non-empty content after trimming whitespace
+3. Each item must be a single concise statement (one line)
+4. Tags must be drawn from the controlled vocabulary above
+5. Prefer reinforce over insert when the new item is semantically equivalent to an existing one
+6. Delete items whose last_reinforced date is more than 12 months before today AND they are not reinforced by the new content
+7. Output JSON only — no preamble, no code fences, no explanation`

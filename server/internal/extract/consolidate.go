@@ -2,181 +2,271 @@ package extract
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
+	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
-// MaxRecordChars is the hard limit on consolidated content length.
-// Mirrors AGENTCORE_RECORD_LIMIT in infra/lambda/context-extractor/index.ts (16000).
-const MaxRecordChars = 16000
-
-// DimensionKind identifies which consolidation template to use.
-type DimensionKind string
+// ConsolidationKind selects which system prompt the consolidator uses.
+type ConsolidationKind string
 
 const (
-	DimAbout        DimensionKind = "about"
-	DimProject      DimensionKind = "project"
-	DimTask         DimensionKind = "task"
-	DimPreferences  DimensionKind = "preferences"
+	KindConsolidatePreferences ConsolidationKind = "preferences"
+	KindConsolidateAbout       ConsolidationKind = "about"
+	KindConsolidateProject     ConsolidationKind = "project"
+	KindConsolidateTask        ConsolidationKind = "task"
 )
 
-// ConsolidationTruncatedError signals the LLM hit max_tokens and produced a
-// truncated record; callers should treat as a hard failure rather than write
-// the partial result. Mirrors the TS ConsolidationTruncatedError.
-type ConsolidationTruncatedError struct {
-	Dim DimensionKind
+// ConsolidationContext supplies dimension-specific info for prompts.
+type ConsolidationContext struct {
+	Today      string // YYYY-MM-DD UTC
+	Project    string // only used for KindConsolidateProject
+	TaskDomain string // only used for KindConsolidateTask
 }
 
-func (e *ConsolidationTruncatedError) Error() string {
-	return fmt.Sprintf("consolidation for %s hit max_tokens — refusing to write truncated record", e.Dim)
+// ItemRef describes an existing memory item shown to the LLM during consolidation.
+type ItemRef struct {
+	ID              uuid.UUID
+	Content         string
+	Tags            []string
+	CreatedAt       string // YYYY-MM-DD
+	LastReinforced  string // YYYY-MM-DD
+	ReinforcedCount int
 }
 
-// Consolidate merges existing records with new content into one distilled
-// record. Sends the full prompt as a single user message (no system prompt),
-// matching the TS production behavior.
-//
-// existingRecords: prior content for the namespace, in insertion order. Empty
-// for first write.
-// newContent: the newly-extracted text (Facts for project/task, About blob for about).
-// metaProject: passed through to the project type-instructions. Ignored for task and about.
-// today: current date as YYYY-MM-DD (UTC). Used for freshness rules.
-// existingLastUpdated: the existing record's last_updated date as YYYY-MM-DD, or "" if unknown.
-//
-// Returns the cleaned LLM output, or a ConsolidationTruncatedError on max_tokens.
-func Consolidate(
+// NewItem is a freshly-extracted item presented to the LLM as a candidate.
+type NewItem struct {
+	Content string
+	Tags    []string
+}
+
+// ConsolidationDiffError signals a parse/validation failure on the diff.
+type ConsolidationDiffError struct {
+	Msg string
+}
+
+func (e *ConsolidationDiffError) Error() string {
+	return fmt.Sprintf("consolidation diff error: %s", e.Msg)
+}
+
+// ConsolidationTruncatedError is an alias for ConsolidationDiffError kept for
+// backward compatibility with callers that may check for it.
+type ConsolidationTruncatedError = ConsolidationDiffError
+
+// ConsolidateResult is the return type of ConsolidateItems.
+type ConsolidateResult struct {
+	Diff       store.MemoryDiff
+	IsDegraded bool   // true when validation fell through to insert-only fallback
+	LastError  string // populated when IsDegraded is true
+}
+
+// ConsolidateItems calls the LLM to produce a MemoryDiff merging existing items
+// with newly-extracted items. On validation failure it retries once with a
+// corrective prompt. After two failures it returns an insert-only diff with
+// IsDegraded=true.
+func ConsolidateItems(
 	ctx context.Context,
 	cli llm.Client,
 	model string,
-	dim DimensionKind,
-	existingRecords []string,
-	newContent string,
-	metaProject string,
-	today string,
-	existingLastUpdated string,
-) (string, error) {
-	prompt, err := buildConsolidationPrompt(dim, existingRecords, newContent, metaProject, today, existingLastUpdated)
+	kind ConsolidationKind,
+	cctx ConsolidationContext,
+	existing []ItemRef,
+	incoming []NewItem,
+) (ConsolidateResult, error) {
+	systemPrompt := buildSystemPrompt(kind, cctx)
+	userMsg := buildUserMessage(cctx.Today, existing, incoming)
+
+	// First attempt.
+	raw, truncated, err := callLLM(ctx, cli, model, systemPrompt, userMsg)
 	if err != nil {
-		return "", err
+		return ConsolidateResult{}, err
 	}
-	out, err := cli.Complete(ctx, llm.CompleteRequest{
+	if truncated {
+		return ConsolidateResult{}, &ConsolidationDiffError{Msg: "LLM hit max_tokens on consolidation"}
+	}
+
+	diff, verr := ParseDiff(raw)
+	if verr == nil {
+		verr = validateDiff(diff, existing)
+	}
+	if verr == nil {
+		return ConsolidateResult{Diff: diff}, nil
+	}
+
+	// One retry with corrective prompt.
+	slog.Warn("consolidation diff invalid on first attempt, retrying", "kind", kind, "err", verr)
+	corrective := userMsg + "\n\nYour previous response had an error: " + verr.Error() +
+		"\nReturn a corrected JSON diff only. Do not repeat the error."
+	raw2, truncated2, err2 := callLLM(ctx, cli, model, systemPrompt, corrective)
+	if err2 != nil {
+		return ConsolidateResult{}, err2
+	}
+	if truncated2 {
+		return degradedResult(incoming, "LLM hit max_tokens on retry"), nil
+	}
+
+	diff2, verr2 := ParseDiff(raw2)
+	if verr2 == nil {
+		verr2 = validateDiff(diff2, existing)
+	}
+	if verr2 == nil {
+		return ConsolidateResult{Diff: diff2}, nil
+	}
+
+	// Both attempts failed — degrade to insert-only.
+	slog.Warn("consolidation diff invalid after retry, degrading to insert-only",
+		"kind", kind, "err", verr2)
+	return degradedResult(incoming, verr2.Error()), nil
+}
+
+func callLLM(ctx context.Context, cli llm.Client, model, system, userMsg string) (text string, truncated bool, err error) {
+	resp, err := cli.Complete(ctx, llm.CompleteRequest{
 		Model:     model,
-		Messages:  []llm.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 8192,
+		System:    system,
+		Messages:  []llm.Message{{Role: "user", Content: userMsg}},
+		MaxTokens: 4096,
 	})
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	if out.StopReason == "max_tokens" {
-		return "", &ConsolidationTruncatedError{Dim: dim}
+	if resp.StopReason == "max_tokens" {
+		return "", true, nil
 	}
-	return strings.TrimSpace(out.Text), nil
+	return strings.TrimSpace(resp.Text), false, nil
 }
 
-func buildConsolidationPrompt(dim DimensionKind, existing []string, newContent, project, today, existingLastUpdated string) (string, error) {
-	var existingText string
-	if len(existing) == 0 {
-		existingText = "(none yet)"
-	} else {
-		var b strings.Builder
-		for i, r := range existing {
-			if i > 0 {
-				b.WriteString("\n\n")
-			}
-			fmt.Fprintf(&b, "Record %d:\n%s", i+1, r)
+func buildSystemPrompt(kind ConsolidationKind, cctx ConsolidationContext) string {
+	switch kind {
+	case KindConsolidateProject:
+		name := cctx.Project
+		if name == "" {
+			name = "unknown"
 		}
-		existingText = b.String()
-	}
-
-	if existingLastUpdated == "" {
-		existingLastUpdated = "(n/a)"
-	}
-
-	switch dim {
-	case DimAbout:
-		return fmt.Sprintf(SystemAboutConsolidate, today, existingLastUpdated, existingText, newContent), nil
-	case DimProject:
-		typeInstr := fmt.Sprintf(
-			`This is a PROJECT memory for %q. Keep architecture decisions, design rationale, and system constraints. Drop implementation specifics that belong in the code itself.`,
-			sanitizeMetaValue(project),
-		)
-		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, today, existingLastUpdated, existingText, newContent), nil
-	case DimTask:
-		typeInstr := `This is a TASK memory for transferable domain insights. Keep patterns and lessons that apply beyond a single session. Drop session-specific details.`
-		return fmt.Sprintf(SystemProjectTaskConsolidate, typeInstr, today, existingLastUpdated, existingText, newContent), nil
-	default:
-		return "", errors.New("consolidate: unknown dimension")
+		return fmt.Sprintf(SystemConsolidateProject, name)
+	case KindConsolidateTask:
+		domain := cctx.TaskDomain
+		if domain == "" {
+			domain = "general"
+		}
+		return fmt.Sprintf(SystemConsolidateTask, domain)
+	case KindConsolidateAbout:
+		return SystemConsolidateAbout
+	default: // KindConsolidatePreferences
+		return SystemConsolidatePreferences
 	}
 }
 
-// sanitizeMetaValue mirrors the TS sanitizeMetaValue helper — strips control
-// chars and limits length. For our use (project name in a prompt), a light
-// pass that prevents prompt-injection-style escapes is enough.
-func sanitizeMetaValue(s string) string {
-	if s == "" {
-		return "unknown"
-	}
-	// Drop any unprintable chars and limit to a sane length.
+func buildUserMessage(today string, existing []ItemRef, incoming []NewItem) string {
 	var b strings.Builder
-	for _, r := range s {
-		if r >= 32 && r != 127 {
-			b.WriteRune(r)
-		}
-		if b.Len() >= 200 {
-			break
+	fmt.Fprintf(&b, "Today's date: %s\n\n", today)
+
+	b.WriteString("EXISTING ITEMS:\n")
+	if len(existing) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		for _, it := range existing {
+			tags := strings.Join(it.Tags, ", ")
+			if tags == "" {
+				tags = "(none)"
+			}
+			fmt.Fprintf(&b, "[id: %s, created: %s, last_reinforced: %s, count: %d, tags: [%s]]\n%s\n\n",
+				it.ID, it.CreatedAt, it.LastReinforced, it.ReinforcedCount, tags, it.Content)
 		}
 	}
-	out := strings.TrimSpace(b.String())
-	if out == "" {
-		return "unknown"
+
+	b.WriteString("NEW EXTRACTED ITEMS:\n")
+	if len(incoming) == 0 {
+		b.WriteString("(none)\n")
+	} else {
+		for _, it := range incoming {
+			tags := strings.Join(it.Tags, ", ")
+			if tags == "" {
+				tags = "(suggested)"
+			}
+			fmt.Fprintf(&b, "[tags: %s]\n%s\n\n", tags, it.Content)
+		}
 	}
-	return out
+
+	return strings.TrimRight(b.String(), "\n")
 }
 
-// TruncateToLimit caps text at MaxRecordChars, appending "\n..." if it overflows.
-// Use this on the FINAL content before persisting (matching writeMemoryRecord in TS).
-func TruncateToLimit(s string) string {
-	if len(s) <= MaxRecordChars {
-		return s
+func validateDiff(d store.MemoryDiff, existing []ItemRef) error {
+	// Build set of valid IDs.
+	valid := make(map[uuid.UUID]bool, len(existing))
+	for _, it := range existing {
+		valid[it.ID] = true
 	}
-	return s[:MaxRecordChars-4] + "\n..."
+
+	// Track which IDs have been assigned an operation.
+	seen := make(map[uuid.UUID]string)
+
+	check := func(id uuid.UUID, op string) error {
+		if !valid[id] {
+			return fmt.Errorf("unknown ID %s in %s", id, op)
+		}
+		if prev, ok := seen[id]; ok {
+			return fmt.Errorf("ID %s appears in both %s and %s", id, prev, op)
+		}
+		seen[id] = op
+		return nil
+	}
+
+	for _, id := range d.Keep {
+		if err := check(id, "keep"); err != nil {
+			return err
+		}
+	}
+	for _, id := range d.Reinforce {
+		if err := check(id, "reinforce"); err != nil {
+			return err
+		}
+	}
+	for _, id := range d.Delete {
+		if err := check(id, "delete"); err != nil {
+			return err
+		}
+	}
+	for _, op := range d.Update {
+		if err := check(op.ID, "update"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(op.Content) == "" {
+			return fmt.Errorf("update op for %s has empty content", op.ID)
+		}
+	}
+
+	// Validate inserts.
+	for i, op := range d.Insert {
+		if strings.TrimSpace(op.Content) == "" {
+			return fmt.Errorf("insert[%d] has empty content", i)
+		}
+	}
+
+	// Every existing item must be covered.
+	for _, it := range existing {
+		if _, ok := seen[it.ID]; !ok {
+			return fmt.Errorf("existing item %s not covered by diff (must appear in keep/reinforce/delete/update)", it.ID)
+		}
+	}
+
+	return nil
 }
 
-// ConsolidateFreshness merges existing record + new content using the
-// freshness-aware prompt. Used for preferences (and any future "evolving
-// list of statements" dimension). Sends as a single user message, no system
-// prompt — matches the Anthropic pattern used by the other consolidation prompts.
-//
-// today and existingLastUpdated are passed as YYYY-MM-DD strings.
-func ConsolidateFreshness(
-	ctx context.Context,
-	cli llm.Client,
-	model string,
-	dim DimensionKind,
-	today, existingLastUpdated, existingBody, newContent string,
-) (string, error) {
-	if existingBody == "" {
-		existingBody = "(none yet)"
+func degradedResult(incoming []NewItem, lastErr string) ConsolidateResult {
+	inserts := make([]store.InsertOp, 0, len(incoming))
+	for _, it := range incoming {
+		if strings.TrimSpace(it.Content) == "" {
+			continue
+		}
+		inserts = append(inserts, store.InsertOp{Content: it.Content, Tags: it.Tags})
 	}
-	if existingLastUpdated == "" {
-		existingLastUpdated = "(n/a)"
+	return ConsolidateResult{
+		Diff:       store.MemoryDiff{Insert: inserts},
+		IsDegraded: true,
+		LastError:  lastErr,
 	}
-	prompt := fmt.Sprintf(
-		SystemFreshnessConsolidate,
-		string(dim), today, existingLastUpdated, existingBody, newContent,
-	)
-	out, err := cli.Complete(ctx, llm.CompleteRequest{
-		Model:     model,
-		Messages:  []llm.Message{{Role: "user", Content: prompt}},
-		MaxTokens: 8192,
-	})
-	if err != nil {
-		return "", err
-	}
-	if out.StopReason == "max_tokens" {
-		return "", &ConsolidationTruncatedError{Dim: dim}
-	}
-	return strings.TrimSpace(out.Text), nil
 }

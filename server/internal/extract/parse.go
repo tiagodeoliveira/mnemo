@@ -3,8 +3,12 @@ package extract
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/google/uuid"
+	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
 // ProjectTaskLog mirrors the TS ExtractionResult parsed from the custom
@@ -65,12 +69,12 @@ func isNone(s string) bool {
 	return s == "" || strings.EqualFold(s, "NONE")
 }
 
-// PreferencesOutput is the JSON shape from SystemPreferences.
+// PreferencesOutput is the JSON shape from SystemExtractPreferences.
 type PreferencesOutput struct {
 	Preferences []string `json:"preferences"`
 }
 
-// EpisodesOutput is the JSON shape from SystemEpisodes.
+// EpisodesOutput is the JSON shape from SystemExtractEpisodes.
 type EpisodesOutput struct {
 	Episodes []struct {
 		Event      string `json:"event"`
@@ -99,4 +103,105 @@ func ParsePreferences(s string) (PreferencesOutput, error) {
 func ParseEpisodes(s string) (EpisodesOutput, error) {
 	var out EpisodesOutput
 	return out, strictUnmarshal(s, &out)
+}
+
+// aboutRE matches the ABOUT: header and captures everything below it.
+var aboutRE = regexp.MustCompile(`(?im)^ABOUT:\s*\n?([\s\S]*)$`)
+
+// ParseAbout parses the ABOUT: block output from SystemExtractAbout into a
+// slice of NewItem values (one per non-empty, non-NONE line).
+func ParseAbout(s string) []NewItem {
+	m := aboutRE.FindStringSubmatch(s)
+	if len(m) < 2 {
+		return nil
+	}
+	body := strings.TrimSpace(m[1])
+	if isNone(body) {
+		return nil
+	}
+	var out []NewItem
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || isNone(line) {
+			continue
+		}
+		out = append(out, NewItem{Content: line, Tags: []string{"identity"}})
+	}
+	return out
+}
+
+// rawUpdateOp is the intermediate JSON representation for an update op before UUID parsing.
+type rawUpdateOp struct {
+	ID      string   `json:"id"`
+	Content string   `json:"content"`
+	Tags    []string `json:"tags"`
+}
+
+// rawDiff is the intermediate JSON representation before UUID parsing.
+type rawDiffFull struct {
+	Keep      []string      `json:"keep"`
+	Reinforce []string      `json:"reinforce"`
+	Delete    []string      `json:"delete"`
+	Update    []rawUpdateOp `json:"update"`
+	Insert    []store.InsertOp `json:"insert"`
+}
+
+// ParseDiff strips code fences, parses the JSON diff produced by a
+// consolidation prompt, and converts string IDs to uuid.UUID.
+func ParseDiff(text string) (store.MemoryDiff, error) {
+	text = strings.TrimSpace(text)
+	text = strings.TrimPrefix(text, "```json")
+	text = strings.TrimPrefix(text, "```")
+	text = strings.TrimSuffix(text, "```")
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return store.MemoryDiff{}, errors.New("ParseDiff: empty input")
+	}
+
+	var r rawDiffFull
+	if err := json.Unmarshal([]byte(text), &r); err != nil {
+		return store.MemoryDiff{}, fmt.Errorf("ParseDiff: %w", err)
+	}
+
+	parseIDs := func(ss []string, label string) ([]uuid.UUID, error) {
+		out := make([]uuid.UUID, 0, len(ss))
+		for _, s := range ss {
+			id, err := uuid.Parse(strings.TrimSpace(s))
+			if err != nil {
+				return nil, fmt.Errorf("ParseDiff: invalid UUID in %s %q: %w", label, s, err)
+			}
+			out = append(out, id)
+		}
+		return out, nil
+	}
+
+	keep, err := parseIDs(r.Keep, "keep")
+	if err != nil {
+		return store.MemoryDiff{}, err
+	}
+	reinforce, err := parseIDs(r.Reinforce, "reinforce")
+	if err != nil {
+		return store.MemoryDiff{}, err
+	}
+	del, err := parseIDs(r.Delete, "delete")
+	if err != nil {
+		return store.MemoryDiff{}, err
+	}
+
+	updates := make([]store.UpdateOp, 0, len(r.Update))
+	for _, u := range r.Update {
+		id, err := uuid.Parse(strings.TrimSpace(u.ID))
+		if err != nil {
+			return store.MemoryDiff{}, fmt.Errorf("ParseDiff: invalid UUID in update %q: %w", u.ID, err)
+		}
+		updates = append(updates, store.UpdateOp{ID: id, Content: u.Content, Tags: u.Tags})
+	}
+
+	return store.MemoryDiff{
+		Keep:      keep,
+		Reinforce: reinforce,
+		Delete:    del,
+		Update:    updates,
+		Insert:    r.Insert,
+	}, nil
 }

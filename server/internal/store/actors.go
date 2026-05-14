@@ -3,31 +3,40 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
 
 type Actor struct {
-	ID               string
-	DisplayName      string
-	Email            sql.NullString
-	Timezone         string
-	DigestEnabled    bool
-	CreatedAt        time.Time
-	EpisodeStrategy  string
+	ID              string
+	DisplayName     string
+	Email           sql.NullString
+	Timezone        string
+	DigestEnabled   bool
+	CreatedAt       time.Time
+	EpisodeStrategy string
+	TTLOverrides    map[string]int // per-dimension TTL in days; 0 = never expires
 }
 
 func (s *Store) GetActor(ctx context.Context, id string) (*Actor, error) {
 	var a Actor
+	var ttlRaw []byte
 	err := s.DB.QueryRowContext(ctx, `
-		SELECT actor_id, display_name, email, timezone, digest_enabled, created_at, episode_strategy
+		SELECT actor_id, display_name, email, timezone, digest_enabled, created_at,
+		       episode_strategy, ttl_overrides
 		FROM actors WHERE actor_id = $1
-	`, id).Scan(&a.ID, &a.DisplayName, &a.Email, &a.Timezone, &a.DigestEnabled, &a.CreatedAt, &a.EpisodeStrategy)
+	`, id).Scan(&a.ID, &a.DisplayName, &a.Email, &a.Timezone, &a.DigestEnabled, &a.CreatedAt,
+		&a.EpisodeStrategy, &ttlRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
+	}
+	a.TTLOverrides = make(map[string]int)
+	if len(ttlRaw) > 0 {
+		_ = json.Unmarshal(ttlRaw, &a.TTLOverrides)
 	}
 	return &a, nil
 }

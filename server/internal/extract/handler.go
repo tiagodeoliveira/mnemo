@@ -4,8 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,6 +15,18 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
+
+// defaultTTLDays maps dimension name to TTL in days. 0 = never expires.
+var defaultTTLDays = map[string]int{
+	"preferences":   365,
+	"about":         0,
+	"project":       0,
+	"task":          365,
+	"daily_log":     365,
+	"episodes":      0,
+	"daily_summary": 365,
+	"meeting":       0,
+}
 
 type Handler struct {
 	Store *store.Store
@@ -57,14 +69,15 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	turnsText := turnsToText(turnsRaw)
 	projectName := project.String
 	date := createdAt.UTC().Format("2006-01-02")
+	today := time.Now().UTC().Format("2006-01-02")
 
 	classifierPrompt := fmt.Sprintf(
-		SystemProjectTaskDailyLog,
+		SystemExtractClassifier,
 		buildMetaSection(projectName, workdir.String),
 		buildDomainList(),
 	) + "\n\nCONVERSATION:\n" + turnsText
 
-	aboutPrompt := SystemAbout + "\n\nCONVERSATION:\n" + turnsText
+	aboutPrompt := SystemExtractAbout + "\n\nCONVERSATION:\n" + turnsText
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -82,7 +95,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	})
 
-	var aboutText string
+	var aboutItems []NewItem
 	g.Go(func() error {
 		out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
 			Model:     h.Model,
@@ -92,7 +105,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		if err != nil {
 			return err
 		}
-		aboutText = strings.TrimSpace(out.Text)
+		aboutItems = ParseAbout(out.Text)
 		return nil
 	})
 
@@ -100,7 +113,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	g.Go(func() error {
 		out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
 			Model:     h.Model,
-			System:    SystemPreferences,
+			System:    SystemExtractPreferences,
 			Messages:  []llm.Message{{Role: "user", Content: turnsText}},
 			MaxTokens: 512,
 		})
@@ -117,7 +130,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		g.Go(func() error {
 			out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
 				Model:     h.Model,
-				System:    SystemEpisodes,
+				System:    SystemExtractEpisodes,
 				Messages:  []llm.Message{{Role: "user", Content: turnsText}},
 				MaxTokens: 768,
 			})
@@ -133,109 +146,144 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	}
 
-	hasProject := projectName != "" && !isNone(ptl.Facts)
-	hasTask := ptl.TaskDomain != "unknown" && !isNone(ptl.Facts)
-	hasDaily := !isNone(ptl.Daily)
-	hasAbout := !isNone(aboutText)
-	hasPreferences := len(prefs.Preferences) > 0
+	// Build NewItem slices per dimension.
+	var projectItems []NewItem
+	if projectName != "" && !isNone(ptl.Facts) && ptl.Facts != "" {
+		for _, line := range strings.Split(ptl.Facts, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || isNone(line) {
+				continue
+			}
+			projectItems = append(projectItems, NewItem{Content: line, Tags: []string{"architecture"}})
+		}
+	}
+
+	var taskItems []NewItem
+	if ptl.TaskDomain != "unknown" && !isNone(ptl.Facts) && ptl.Facts != "" {
+		for _, line := range strings.Split(ptl.Facts, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || isNone(line) {
+				continue
+			}
+			taskItems = append(taskItems, NewItem{Content: line, Tags: []string{"pattern"}})
+		}
+	}
+
+	var prefItems []NewItem
+	for _, pref := range prefs.Preferences {
+		if strings.TrimSpace(pref) == "" {
+			continue
+		}
+		prefItems = append(prefItems, NewItem{Content: pref, Tags: []string{}})
+	}
+
+	hasProject := len(projectItems) > 0
+	hasTask := len(taskItems) > 0
+	hasDaily := !isNone(ptl.Daily) && ptl.Daily != ""
+	hasAbout := len(aboutItems) > 0
+	hasPreferences := len(prefItems) > 0
+
+	// ttlFor returns the effective TTL in days for a dimension, respecting per-actor overrides.
+	ttlFor := func(dim string) int {
+		if v, ok := actor.TTLOverrides[dim]; ok {
+			return v
+		}
+		return defaultTTLDays[dim]
+	}
 
 	// Consolidation LLM calls happen OUTSIDE the tx (they can take seconds).
-	// We accept the cost of re-running them on retry.
-
-	today := time.Now().UTC().Format("2006-01-02")
+	cctx := ConsolidationContext{Today: today, Project: projectName, TaskDomain: ptl.TaskDomain}
 
 	var (
-		consolidatedProject     string
-		consolidatedTask        string
-		consolidatedAbout       string
-		consolidatedPreferences string
+		projectDiff store.DiffApplyOpts
+		projectDiffResult ConsolidateResult
+		taskDiff store.DiffApplyOpts
+		taskDiffResult ConsolidateResult
+		aboutDiff store.DiffApplyOpts
+		aboutDiffResult ConsolidateResult
+		prefsDiff store.DiffApplyOpts
+		prefsDiffResult ConsolidateResult
 	)
 
 	if hasProject {
 		ns := fmt.Sprintf("/projects/%s/%s/", p.ActorID, projectName)
-		prior, err := h.readPrior(ctx, p.ActorID, ns)
+		existing, err := h.existingItemRefs(ctx, p.ActorID, ns)
 		if err != nil {
 			return err
 		}
-		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
-		if len(prior) > 0 {
-			merged, err := Consolidate(ctx, h.LLM, h.Model, DimProject, prior, ptl.Facts, projectName, today, priorDate)
-			if err != nil {
-				return err
-			}
-			consolidatedProject = merged
-		} else {
-			consolidatedProject = ptl.Facts
+		result, err := ConsolidateItems(ctx, h.LLM, h.Model, KindConsolidateProject, cctx, existing, projectItems)
+		if err != nil {
+			return err
+		}
+		if result.IsDegraded {
+			slog.Warn("project consolidation degraded", "actor", p.ActorID, "err", result.LastError)
+		}
+		projectDiffResult = result
+		projectDiff = store.DiffApplyOpts{
+			ActorID: p.ActorID, Dimension: "project", Namespace: ns,
+			SourceEventID: p.EventID, TTLDays: ttlFor("project"),
 		}
 	}
 
 	if hasTask {
 		ns := fmt.Sprintf("/tasks/%s/%s/", p.ActorID, ptl.TaskDomain)
-		prior, err := h.readPrior(ctx, p.ActorID, ns)
+		existing, err := h.existingItemRefs(ctx, p.ActorID, ns)
 		if err != nil {
 			return err
 		}
-		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
-		if len(prior) > 0 {
-			merged, err := Consolidate(ctx, h.LLM, h.Model, DimTask, prior, ptl.Facts, "", today, priorDate)
-			if err != nil {
-				return err
-			}
-			consolidatedTask = merged
-		} else {
-			consolidatedTask = ptl.Facts
+		result, err := ConsolidateItems(ctx, h.LLM, h.Model, KindConsolidateTask, cctx, existing, taskItems)
+		if err != nil {
+			return err
+		}
+		if result.IsDegraded {
+			slog.Warn("task consolidation degraded", "actor", p.ActorID, "err", result.LastError)
+		}
+		taskDiffResult = result
+		taskDiff = store.DiffApplyOpts{
+			ActorID: p.ActorID, Dimension: "task",
+			Namespace:     fmt.Sprintf("/tasks/%s/%s/", p.ActorID, ptl.TaskDomain),
+			SourceEventID: p.EventID, TTLDays: ttlFor("task"),
 		}
 	}
 
 	if hasAbout {
 		ns := fmt.Sprintf("/about/%s/", p.ActorID)
-		prior, err := h.readPrior(ctx, p.ActorID, ns)
+		existing, err := h.existingItemRefs(ctx, p.ActorID, ns)
 		if err != nil {
 			return err
 		}
-		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
-		// About ALWAYS consolidates, even on first write — narrative shape.
-		merged, err := Consolidate(ctx, h.LLM, h.Model, DimAbout, prior, aboutText, "", today, priorDate)
+		result, err := ConsolidateItems(ctx, h.LLM, h.Model, KindConsolidateAbout, cctx, existing, aboutItems)
 		if err != nil {
-			var ct *ConsolidationTruncatedError
-			if errors.As(err, &ct) {
-				return err
-			}
 			return err
 		}
-		consolidatedAbout = merged
-	}
-
-	// Build new preferences content as bullet list, then freshness-consolidate.
-	var newPrefsContent string
-	if hasPreferences {
-		var b strings.Builder
-		for _, pref := range prefs.Preferences {
-			if strings.TrimSpace(pref) == "" {
-				continue
-			}
-			fmt.Fprintf(&b, "- %s\n", pref)
+		if result.IsDegraded {
+			slog.Warn("about consolidation degraded", "actor", p.ActorID, "err", result.LastError)
 		}
-		newPrefsContent = strings.TrimRight(b.String(), "\n")
-		if newPrefsContent == "" {
-			hasPreferences = false
+		aboutDiffResult = result
+		aboutDiff = store.DiffApplyOpts{
+			ActorID: p.ActorID, Dimension: "about", Namespace: fmt.Sprintf("/about/%s/", p.ActorID),
+			SourceEventID: p.EventID, TTLDays: ttlFor("about"),
 		}
 	}
 
 	if hasPreferences {
 		ns := fmt.Sprintf("/preferences/%s/", p.ActorID)
-		priorBody := ""
-		priorDate := h.readPriorUpdatedAt(ctx, p.ActorID, ns)
-		if priors, err := h.readPrior(ctx, p.ActorID, ns); err != nil {
-			return err
-		} else if len(priors) > 0 {
-			priorBody = priors[0]
-		}
-		merged, err := ConsolidateFreshness(ctx, h.LLM, h.Model, DimPreferences, today, priorDate, priorBody, newPrefsContent)
+		existing, err := h.existingItemRefs(ctx, p.ActorID, ns)
 		if err != nil {
 			return err
 		}
-		consolidatedPreferences = merged
+		result, err := ConsolidateItems(ctx, h.LLM, h.Model, KindConsolidatePreferences, cctx, existing, prefItems)
+		if err != nil {
+			return err
+		}
+		if result.IsDegraded {
+			slog.Warn("preferences consolidation degraded", "actor", p.ActorID, "err", result.LastError)
+		}
+		prefsDiffResult = result
+		prefsDiff = store.DiffApplyOpts{
+			ActorID: p.ActorID, Dimension: "preferences", Namespace: fmt.Sprintf("/preferences/%s/", p.ActorID),
+			SourceEventID: p.EventID, TTLDays: ttlFor("preferences"),
+		}
 	}
 
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
@@ -245,61 +293,53 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	defer tx.Rollback()
 
 	// Idempotency: wipe prior append-dim writes for this event before re-inserting.
-	if err := h.Store.DeleteAppendMemoriesForEvent(ctx, tx, p.ActorID, p.EventID,
+	if err := h.Store.DeleteAppendItemsForEvent(ctx, tx, p.EventID,
 		[]string{"episodes", "daily_log"}); err != nil {
 		return err
 	}
 
 	if hasProject {
-		ns := fmt.Sprintf("/projects/%s/%s/", p.ActorID, projectName)
-		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "project", Namespace: ns,
-			Content:       TruncateToLimit(consolidatedProject),
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
+		if err := h.Store.ApplyMemoryDiff(ctx, tx, projectDiff, projectDiffResult.Diff); err != nil {
+			return fmt.Errorf("apply project diff: %w", err)
 		}
 	}
 
 	if hasTask {
-		ns := fmt.Sprintf("/tasks/%s/%s/", p.ActorID, ptl.TaskDomain)
-		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "task", Namespace: ns,
-			Content:       TruncateToLimit(consolidatedTask),
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
+		if err := h.Store.ApplyMemoryDiff(ctx, tx, taskDiff, taskDiffResult.Diff); err != nil {
+			return fmt.Errorf("apply task diff: %w", err)
 		}
 	}
 
 	if hasAbout {
-		ns := fmt.Sprintf("/about/%s/", p.ActorID)
-		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "about", Namespace: ns,
-			Content:       TruncateToLimit(consolidatedAbout),
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
-		}
-	}
-
-	if hasDaily {
-		if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "daily_log",
-			Namespace:     fmt.Sprintf("/daily/%s/%s/log/", p.ActorID, date),
-			Content:       ptl.Daily,
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
+		if err := h.Store.ApplyMemoryDiff(ctx, tx, aboutDiff, aboutDiffResult.Diff); err != nil {
+			return fmt.Errorf("apply about diff: %w", err)
 		}
 	}
 
 	if hasPreferences {
-		ns := fmt.Sprintf("/preferences/%s/", p.ActorID)
-		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "preferences", Namespace: ns,
-			Content:       TruncateToLimit(consolidatedPreferences),
-			SourceEventID: &p.EventID,
+		if err := h.Store.ApplyMemoryDiff(ctx, tx, prefsDiff, prefsDiffResult.Diff); err != nil {
+			return fmt.Errorf("apply preferences diff: %w", err)
+		}
+	}
+
+	if hasDaily {
+		dailyNs := fmt.Sprintf("/daily/%s/%s/log/", p.ActorID, date)
+		dailyTTL := ttlFor("daily_log")
+		var expiresAt sql.NullTime
+		if dailyTTL > 0 {
+			expiresAt = sql.NullTime{
+				Time:  time.Now().UTC().Add(time.Duration(dailyTTL) * 24 * time.Hour),
+				Valid: true,
+			}
+		}
+		if _, err := h.Store.InsertItem(ctx, tx, store.ItemInput{
+			ActorID:       p.ActorID,
+			Dimension:     "daily_log",
+			Namespace:     dailyNs,
+			Content:       ptl.Daily,
+			Tags:          []string{},
+			SourceEventID: p.EventID,
+			ExpiresAt:     expiresAt,
 		}); err != nil {
 			return err
 		}
@@ -316,13 +356,24 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		default:
 			episodesNamespace = fmt.Sprintf("/episodes/%s/", p.ActorID)
 		}
+		epTTL := ttlFor("episodes")
 		for _, e := range ep.Episodes {
 			text := "Event: " + e.Event + "\nReflection: " + e.Reflection
-			if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
-				ActorID: p.ActorID, Dimension: "episodes",
+			var expiresAt sql.NullTime
+			if epTTL > 0 {
+				expiresAt = sql.NullTime{
+					Time:  time.Now().UTC().Add(time.Duration(epTTL) * 24 * time.Hour),
+					Valid: true,
+				}
+			}
+			if _, err := h.Store.InsertItem(ctx, tx, store.ItemInput{
+				ActorID:       p.ActorID,
+				Dimension:     "episodes",
 				Namespace:     episodesNamespace,
 				Content:       text,
-				SourceEventID: &p.EventID,
+				Tags:          []string{},
+				SourceEventID: p.EventID,
+				ExpiresAt:     expiresAt,
 			}); err != nil {
 				return err
 			}
@@ -332,36 +383,26 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	return tx.Commit()
 }
 
-func (h *Handler) readPrior(ctx context.Context, actor, namespace string) ([]string, error) {
-	rows, err := h.Store.DB.QueryContext(ctx,
-		`SELECT content FROM memories WHERE actor_id=$1 AND namespace=$2 ORDER BY updated_at DESC`,
-		actor, namespace,
-	)
+// existingItemRefs loads existing items for a namespace and converts them to
+// ItemRef values for the consolidation LLM call.
+func (h *Handler) existingItemRefs(ctx context.Context, actorID, namespace string) ([]ItemRef, error) {
+	mems, err := h.Store.ListItemsByNamespace(ctx, actorID, namespace)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var c string
-		if err := rows.Scan(&c); err != nil {
-			return nil, err
+	refs := make([]ItemRef, len(mems))
+	for i, m := range mems {
+		lastReinforced := m.UpdatedAt.UTC().Format("2006-01-02")
+		refs[i] = ItemRef{
+			ID:              m.ID,
+			Content:         m.Content,
+			Tags:            m.Tags,
+			CreatedAt:       m.CreatedAt.UTC().Format("2006-01-02"),
+			LastReinforced:  lastReinforced,
+			ReinforcedCount: m.ReinforcedCount,
 		}
-		out = append(out, c)
 	}
-	return out, rows.Err()
-}
-
-func (h *Handler) readPriorUpdatedAt(ctx context.Context, actor, namespace string) string {
-	var t time.Time
-	err := h.Store.DB.QueryRowContext(ctx,
-		`SELECT updated_at FROM memories WHERE actor_id=$1 AND namespace=$2`,
-		actor, namespace,
-	).Scan(&t)
-	if err != nil {
-		return ""
-	}
-	return t.UTC().Format("2006-01-02")
+	return refs, nil
 }
 
 func turnsToText(raw json.RawMessage) string {

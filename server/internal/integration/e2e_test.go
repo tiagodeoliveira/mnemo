@@ -27,17 +27,12 @@ func stubLLM() llm.Client {
 		if len(req.Messages) > 0 {
 			user = req.Messages[0].Content
 		}
+		// Extractor calls (by user message content):
 		switch {
 		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
 			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go.\nDAILY:\nWorked on demo."}, nil
-		case strings.Contains(user, "biographical"):
-			return llm.CompleteResponse{Text: "tiago is a senior engineer."}, nil
-		case strings.Contains(user, "ABOUT memory"):
-			return llm.CompleteResponse{Text: "the actor is a senior engineer."}, nil
-		case strings.Contains(user, "PROJECT memory"):
-			return llm.CompleteResponse{Text: "project consolidated."}, nil
-		case strings.Contains(user, "TASK memory"):
-			return llm.CompleteResponse{Text: "task consolidated."}, nil
+		case strings.Contains(user, "extracting biographical"):
+			return llm.CompleteResponse{Text: "ABOUT:\ntiago is a senior engineer."}, nil
 		case strings.Contains(user, "Meeting id:"):
 			return llm.CompleteResponse{Text: `SUMMARY:
 Two speakers discussed mnemo.
@@ -57,13 +52,25 @@ HIGHLIGHTS:
 FOLLOWUPS:
 NONE`}, nil
 		}
+		// Consolidation calls (by system prompt):
+		switch {
+		case strings.Contains(req.System, "PREFERENCES memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"uses Go","tags":["language"]}]}`}, nil
+		case strings.Contains(req.System, "ABOUT memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"tiago is a senior engineer","tags":["role"]}]}`}, nil
+		case strings.Contains(req.System, "PROJECT memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go","tags":["architecture"]}]}`}, nil
+		case strings.Contains(req.System, "TASK memory"):
+			return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"Uses Go","tags":["pattern"]}]}`}, nil
+		}
+		// Extractor system-prompt-keyed calls:
 		switch req.System {
-		case extract.SystemPreferences:
-			return llm.CompleteResponse{Text: `{"preferences":["use Go"]}`}, nil
-		case extract.SystemEpisodes:
+		case extract.SystemExtractPreferences:
+			return llm.CompleteResponse{Text: `{"preferences":["uses Go"]}`}, nil
+		case extract.SystemExtractEpisodes:
 			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
 		}
-		return llm.CompleteResponse{Text: ""}, nil
+		return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[]}`}, nil
 	}}
 }
 
@@ -127,7 +134,7 @@ func TestEventToRecallEndToEnd(t *testing.T) {
 	}
 
 	// Wait for all jobs to drain.
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		var pending int
 		if err := s.DB.QueryRow(

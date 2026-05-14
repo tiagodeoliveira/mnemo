@@ -2,107 +2,277 @@ package extract
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
+	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
-func TestConsolidateAboutFirstWrite(t *testing.T) {
-	// "About" always consolidates, even on first write — no existing records.
-	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
-		if len(req.Messages) != 1 || req.Messages[0].Role != "user" {
-			t.Errorf("expected single user message, got %+v", req.Messages)
+// cannedDiff returns a stub LLM handler that returns a valid diff JSON.
+// If existingIDs is empty, the diff contains only inserts.
+// If existingIDs is non-empty, every ID goes into "keep".
+func cannedDiffHandler(existingIDs []uuid.UUID, insertContent string) func(llm.CompleteRequest) (llm.CompleteResponse, error) {
+	return func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		keep := make([]string, len(existingIDs))
+		for i, id := range existingIDs {
+			keep[i] = `"` + id.String() + `"`
 		}
-		c := req.Messages[0].Content
-		if !strings.Contains(c, "ABOUT memory") {
-			t.Errorf("missing ABOUT marker: %s", c[:min(200, len(c))])
+		keepJSON := "[" + strings.Join(keep, ",") + "]"
+		var inserts string
+		if insertContent != "" {
+			inserts = `[{"content":"` + insertContent + `","tags":["tool"]}]`
+		} else {
+			inserts = "[]"
 		}
-		if !strings.Contains(c, "(none yet)") {
-			t.Errorf("first-write should say (none yet)")
-		}
-		if !strings.Contains(c, "tiago is a senior engineer") {
-			t.Errorf("missing new content")
-		}
-		return llm.CompleteResponse{Text: "  the actor is a senior engineer.\n"}, nil
-	}}
-	out, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "tiago is a senior engineer", "", "2026-05-14", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != "the actor is a senior engineer." {
-		t.Fatalf("trim failed: %q", out)
+		resp := `{"keep":` + keepJSON + `,"reinforce":[],"delete":[],"update":[],"insert":` + inserts + `}`
+		return llm.CompleteResponse{Text: resp}, nil
 	}
 }
 
-func TestConsolidateProjectInjectsName(t *testing.T) {
-	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
-		c := req.Messages[0].Content
-		if !strings.Contains(c, `PROJECT memory for "mnemo"`) {
-			t.Errorf("missing project name injection")
-		}
-		if !strings.Contains(c, "Record 1:") {
-			t.Errorf("existing records not formatted")
-		}
-		return llm.CompleteResponse{Text: "consolidated"}, nil
-	}}
-	_, err := Consolidate(context.Background(), stub, "claude-test", DimProject,
-		[]string{"prior fact"}, "new fact", "mnemo", "2026-05-14", "2024-01-01")
+func TestConsolidateItemsFirstWrite(t *testing.T) {
+	// No existing items — all incoming become inserts.
+	stub := &llm.Stub{Handler: cannedDiffHandler(nil, "uses Go for backend services")}
+	result, err := ConsolidateItems(
+		context.Background(), stub, "claude-test",
+		KindConsolidatePreferences,
+		ConsolidationContext{Today: "2026-05-14"},
+		nil, // no existing items
+		[]NewItem{{Content: "uses Go for backend services", Tags: []string{"language"}}},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestConsolidateTaskNoNameNeeded(t *testing.T) {
-	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
-		c := req.Messages[0].Content
-		if !strings.Contains(c, "TASK memory for transferable") {
-			t.Errorf("missing TASK type instructions")
-		}
-		return llm.CompleteResponse{Text: "ok"}, nil
-	}}
-	_, err := Consolidate(context.Background(), stub, "claude-test", DimTask,
-		[]string{"a", "b"}, "new", "", "2026-05-14", "2024-01-01")
-	if err != nil {
-		t.Fatal(err)
+	if result.IsDegraded {
+		t.Errorf("expected clean result, got degraded: %s", result.LastError)
+	}
+	if len(result.Diff.Insert) != 1 {
+		t.Fatalf("expected 1 insert, got %d", len(result.Diff.Insert))
+	}
+	if result.Diff.Insert[0].Content != "uses Go for backend services" {
+		t.Errorf("unexpected insert content: %s", result.Diff.Insert[0].Content)
 	}
 }
 
-func TestConsolidateTruncatedErrors(t *testing.T) {
+func TestConsolidateItemsReinforceExisting(t *testing.T) {
+	existingID := uuid.New()
+	// LLM puts the existing item into "reinforce" and adds nothing new.
+	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		resp := `{"keep":[],"reinforce":["` + existingID.String() + `"],"delete":[],"update":[],"insert":[]}`
+		return llm.CompleteResponse{Text: resp}, nil
+	}}
+	existing := []ItemRef{{
+		ID:              existingID,
+		Content:         "uses Go for backend services",
+		Tags:            []string{"language"},
+		CreatedAt:       "2026-01-01",
+		LastReinforced:  "2026-04-01",
+		ReinforcedCount: 3,
+	}}
+	result, err := ConsolidateItems(
+		context.Background(), stub, "claude-test",
+		KindConsolidatePreferences,
+		ConsolidationContext{Today: "2026-05-14"},
+		existing,
+		[]NewItem{{Content: "uses Go for backend services", Tags: []string{"language"}}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsDegraded {
+		t.Errorf("expected clean result, got degraded: %s", result.LastError)
+	}
+	if len(result.Diff.Reinforce) != 1 || result.Diff.Reinforce[0] != existingID {
+		t.Errorf("expected reinforce of %s, got %+v", existingID, result.Diff)
+	}
+}
+
+func TestConsolidateItemsTruncatedReturnsError(t *testing.T) {
 	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
 		return llm.CompleteResponse{Text: "...", StopReason: "max_tokens"}, nil
 	}}
-	_, err := Consolidate(context.Background(), stub, "claude-test", DimAbout, nil, "new", "", "2026-05-14", "")
-	var ct *ConsolidationTruncatedError
+	_, err := ConsolidateItems(
+		context.Background(), stub, "claude-test",
+		KindConsolidatePreferences,
+		ConsolidationContext{Today: "2026-05-14"},
+		nil,
+		[]NewItem{{Content: "some pref"}},
+	)
 	if err == nil {
-		t.Fatal("expected truncated error")
+		t.Fatal("expected error on max_tokens")
 	}
-	if !errorAs(err, &ct) {
-		t.Fatalf("wrong error type: %T", err)
+	var ce *ConsolidationDiffError
+	if !errorAs(err, &ce) {
+		t.Fatalf("expected ConsolidationDiffError, got %T: %v", err, err)
 	}
 }
 
-func TestTruncateToLimit(t *testing.T) {
-	short := strings.Repeat("a", 100)
-	if TruncateToLimit(short) != short {
-		t.Fatal("short input should pass through")
+func TestConsolidateItemsDegradedOnBadDiff(t *testing.T) {
+	// Both attempts return invalid JSON — should degrade to insert-only.
+	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		return llm.CompleteResponse{Text: "not json at all"}, nil
+	}}
+	result, err := ConsolidateItems(
+		context.Background(), stub, "claude-test",
+		KindConsolidatePreferences,
+		ConsolidationContext{Today: "2026-05-14"},
+		nil,
+		[]NewItem{{Content: "pref A"}, {Content: "pref B"}},
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
-	long := strings.Repeat("b", MaxRecordChars+1000)
-	got := TruncateToLimit(long)
-	if len(got) != MaxRecordChars {
-		t.Fatalf("expected length %d, got %d", MaxRecordChars, len(got))
+	if !result.IsDegraded {
+		t.Error("expected degraded=true")
 	}
-	if !strings.HasSuffix(got, "\n...") {
-		t.Fatal("truncated output should end with marker")
+	if len(result.Diff.Insert) != 2 {
+		t.Errorf("expected 2 inserts in degraded mode, got %d", len(result.Diff.Insert))
+	}
+}
+
+func TestConsolidateItemsUnknownIDReturnsError(t *testing.T) {
+	// LLM references a UUID that is not in existing — validation must fail,
+	// then retry also fails, then degrade.
+	unknownID := uuid.New()
+	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		resp := `{"keep":["` + unknownID.String() + `"],"reinforce":[],"delete":[],"update":[],"insert":[]}`
+		return llm.CompleteResponse{Text: resp}, nil
+	}}
+	result, err := ConsolidateItems(
+		context.Background(), stub, "claude-test",
+		KindConsolidatePreferences,
+		ConsolidationContext{Today: "2026-05-14"},
+		nil, // no existing items
+		[]NewItem{{Content: "some pref"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsDegraded {
+		t.Error("expected degraded=true when LLM returns unknown IDs")
+	}
+}
+
+func TestConsolidateItemsAllDimensionKinds(t *testing.T) {
+	// Smoke test that each kind's prompt is built without panicking.
+	for _, kind := range []ConsolidationKind{
+		KindConsolidatePreferences, KindConsolidateAbout,
+		KindConsolidateProject, KindConsolidateTask,
+	} {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+				if req.System == "" {
+					t.Error("expected non-empty system prompt")
+				}
+				return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[{"content":"x","tags":[]}]}`}, nil
+			}}
+			_, err := ConsolidateItems(
+				context.Background(), stub, "claude-test", kind,
+				ConsolidationContext{Today: "2026-05-14", Project: "test", TaskDomain: "coding"},
+				nil,
+				[]NewItem{{Content: "fact"}},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestParseDiffHappy(t *testing.T) {
+	id1 := uuid.New()
+	id2 := uuid.New()
+	raw, _ := json.Marshal(map[string]any{
+		"keep":      []string{id1.String()},
+		"reinforce": []string{id2.String()},
+		"delete":    []string{},
+		"update":    []map[string]any{},
+		"insert":    []map[string]any{{"content": "new pref", "tags": []string{"tool"}}},
+	})
+	d, err := ParseDiff(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Keep) != 1 || d.Keep[0] != id1 {
+		t.Errorf("keep: %v", d.Keep)
+	}
+	if len(d.Reinforce) != 1 || d.Reinforce[0] != id2 {
+		t.Errorf("reinforce: %v", d.Reinforce)
+	}
+	if len(d.Insert) != 1 || d.Insert[0].Content != "new pref" {
+		t.Errorf("insert: %v", d.Insert)
+	}
+}
+
+func TestParseDiffStripsCodeFence(t *testing.T) {
+	id := uuid.New()
+	raw := "```json\n" + `{"keep":["` + id.String() + `"],"reinforce":[],"delete":[],"update":[],"insert":[]}` + "\n```"
+	d, err := ParseDiff(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Keep) != 1 || d.Keep[0] != id {
+		t.Errorf("expected keep=%s, got %v", id, d.Keep)
+	}
+}
+
+func TestParseDiffInvalidUUIDErrors(t *testing.T) {
+	raw := `{"keep":["not-a-uuid"],"reinforce":[],"delete":[],"update":[],"insert":[]}`
+	_, err := ParseDiff(raw)
+	if err == nil {
+		t.Fatal("expected error on invalid UUID")
+	}
+}
+
+func TestBuildUserMessageExistingAndIncoming(t *testing.T) {
+	id := uuid.New()
+	existing := []ItemRef{{
+		ID:              id,
+		Content:         "uses Go",
+		Tags:            []string{"language"},
+		CreatedAt:       "2026-01-01",
+		LastReinforced:  "2026-04-01",
+		ReinforcedCount: 5,
+	}}
+	incoming := []NewItem{{Content: "likes Rust", Tags: []string{"language"}}}
+	msg := buildUserMessage("2026-05-14", existing, incoming)
+	if !strings.Contains(msg, id.String()) {
+		t.Error("user message missing existing item ID")
+	}
+	if !strings.Contains(msg, "uses Go") {
+		t.Error("user message missing existing item content")
+	}
+	if !strings.Contains(msg, "likes Rust") {
+		t.Error("user message missing incoming item content")
+	}
+}
+
+// TestValidateDiffCoverageRequired asserts that the validator rejects a diff
+// where an existing item is not mentioned in any operation.
+func TestValidateDiffCoverageRequired(t *testing.T) {
+	id := uuid.New()
+	existing := []ItemRef{{ID: id, Content: "pref", Tags: []string{}, CreatedAt: "2026-01-01", LastReinforced: "2026-01-01", ReinforcedCount: 1}}
+	// Diff with no coverage of `id` at all.
+	d := store.MemoryDiff{
+		Keep:      nil,
+		Reinforce: nil,
+		Delete:    nil,
+		Update:    nil,
+		Insert:    []store.InsertOp{{Content: "new", Tags: []string{}}},
+	}
+	err := validateDiff(d, existing)
+	if err == nil {
+		t.Fatal("expected validation error when existing item not covered")
 	}
 }
 
 func errorAs(err error, target any) bool {
-	// stdlib errors.As, manual to avoid import.
 	for err != nil {
-		switch x := err.(type) {
-		case *ConsolidationTruncatedError:
-			if t, ok := target.(**ConsolidationTruncatedError); ok {
+		if t, ok := target.(**ConsolidationDiffError); ok {
+			if x, ok2 := err.(*ConsolidationDiffError); ok2 {
 				*t = x
 				return true
 			}

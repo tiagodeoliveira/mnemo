@@ -9,18 +9,28 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
+// Memory is the read-side representation of a memory item row.
 type Memory struct {
-	ID         uuid.UUID
-	ActorID    string
-	Dimension  string
-	Namespace  string
-	Content    string
-	Attributes json.RawMessage
-	UpdatedAt  time.Time
+	ID              uuid.UUID
+	ActorID         string
+	Dimension       string
+	Namespace       string
+	Content         string
+	Tags            []string
+	Attributes      json.RawMessage
+	SourceEventIDs  []uuid.UUID
+	ReinforcedCount int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	ExpiresAt       sql.NullTime
+	// Embedding is intentionally not exposed; not needed for non-search reads.
 }
 
+// MemoryInput is the write-side input for inserting a new item.
+// Kept for backward compatibility with digest and meeting handlers.
 type MemoryInput struct {
 	ActorID       string
 	Dimension     string
@@ -30,59 +40,162 @@ type MemoryInput struct {
 	SourceEventID *uuid.UUID
 }
 
-// InsertAppendMemory inserts a row (no upsert). Caller is responsible for de-dup if needed.
+// ItemInput is the canonical write-side input for inserting a new item.
+type ItemInput struct {
+	ActorID       string
+	Dimension     string
+	Namespace     string
+	Content       string
+	Tags          []string
+	Attributes    json.RawMessage
+	SourceEventID uuid.UUID
+	ExpiresAt     sql.NullTime
+}
+
+// InsertItem writes a new memory item row. Embedding is NULL; Stage 3 adds
+// the embedding hook. ExpiresAt may be sql.NullTime{} for "never expires".
+func (s *Store) InsertItem(ctx context.Context, tx *sql.Tx, in ItemInput) (uuid.UUID, error) {
+	id := uuid.New()
+	attrs := in.Attributes
+	if len(attrs) == 0 {
+		attrs = []byte("{}")
+	}
+	tags, err := json.Marshal(in.Tags)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+
+	var expiresAt interface{}
+	if in.ExpiresAt.Valid {
+		expiresAt = in.ExpiresAt.Time
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO memories (
+			memory_id, actor_id, dimension, namespace, content,
+			tags, attributes, source_event_ids, reinforced_count,
+			expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, ARRAY[$8::uuid], 1, $9)
+	`, id, in.ActorID, in.Dimension, in.Namespace, in.Content,
+		tags, attrs, in.SourceEventID, expiresAt)
+	return id, err
+}
+
+// InsertAppendMemory inserts a row using MemoryInput (backward-compat wrapper
+// used by digest and meeting handlers). It maps to InsertItem internally.
 func (s *Store) InsertAppendMemory(ctx context.Context, tx *sql.Tx, m MemoryInput) error {
+	tags := []string{}
 	attrs := m.Attributes
-	if len(attrs) == 0 {
-		attrs = []byte("{}")
+	var eventID uuid.UUID
+	if m.SourceEventID != nil {
+		eventID = *m.SourceEventID
 	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO memories (memory_id, actor_id, dimension, namespace, content, attributes, source_event_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`, uuid.New(), m.ActorID, m.Dimension, m.Namespace, m.Content, attrs, m.SourceEventID)
+	in := ItemInput{
+		ActorID:       m.ActorID,
+		Dimension:     m.Dimension,
+		Namespace:     m.Namespace,
+		Content:       m.Content,
+		Tags:          tags,
+		Attributes:    attrs,
+		SourceEventID: eventID,
+	}
+	_, err := s.InsertItem(ctx, tx, in)
 	return err
 }
 
-// UpsertConsolidatedMemory inserts-or-updates by (actor_id, namespace). Use only for
-// dimensions in the consolidated set (enforced by the partial unique index).
-func (s *Store) UpsertConsolidatedMemory(ctx context.Context, tx *sql.Tx, m MemoryInput) error {
-	attrs := m.Attributes
-	if len(attrs) == 0 {
-		attrs = []byte("{}")
+// ListItemsByNamespace returns all items in a namespace, oldest first.
+func (s *Store) ListItemsByNamespace(ctx context.Context, actorID, namespace string) ([]Memory, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		SELECT memory_id, actor_id, dimension, namespace, content,
+		       tags, attributes, source_event_ids, reinforced_count,
+		       created_at, updated_at, expires_at
+		  FROM memories
+		 WHERE actor_id = $1 AND namespace = $2
+		 ORDER BY created_at ASC
+	`, actorID, namespace)
+	if err != nil {
+		return nil, err
 	}
-	_, err := tx.ExecContext(ctx, `
-		INSERT INTO memories (memory_id, actor_id, dimension, namespace, content, attributes, source_event_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (actor_id, namespace)
-		WHERE dimension IN ('about','project','task','daily_summary','meeting')
-		DO UPDATE SET content = EXCLUDED.content,
-		              attributes = EXCLUDED.attributes,
-		              source_event_id = EXCLUDED.source_event_id,
-		              updated_at = now()
-	`, uuid.New(), m.ActorID, m.Dimension, m.Namespace, m.Content, attrs, m.SourceEventID)
-	return err
+	defer rows.Close()
+	return scanMemories(rows)
 }
 
-// DeleteAppendMemoriesForEvent removes prior append-dim writes for an event.
-// Used by extract_context retries to guarantee idempotency.
-func (s *Store) DeleteAppendMemoriesForEvent(ctx context.Context, tx *sql.Tx, actor string, eventID uuid.UUID, dims []string) error {
-	if len(dims) == 0 {
-		return nil
+// ListItemsOpts are the options for ListItems.
+type ListItemsOpts struct {
+	ActorID         string
+	Dimension       string   // optional
+	NamespacePrefix string   // optional
+	Tags            []string // optional, OR semantics
+	TagsAll         []string // optional, AND semantics
+	Since           sql.NullTime
+	Until           sql.NullTime
+	Limit           int // default 100
+}
+
+// ListItems is the general-purpose recall query.
+func (s *Store) ListItems(ctx context.Context, opts ListItemsOpts) ([]Memory, error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = 100
 	}
-	args := []any{actor, eventID}
-	placeholders := make([]string, len(dims))
-	for i, d := range dims {
-		placeholders[i] = fmt.Sprintf("$%d", i+3)
-		args = append(args, d)
+
+	clauses := []string{"actor_id = $1"}
+	args := []any{opts.ActorID}
+	i := 2
+
+	if opts.Dimension != "" {
+		clauses = append(clauses, fmt.Sprintf("dimension = $%d", i))
+		args = append(args, opts.Dimension)
+		i++
 	}
+	if opts.NamespacePrefix != "" {
+		clauses = append(clauses, fmt.Sprintf("namespace LIKE $%d", i))
+		args = append(args, opts.NamespacePrefix+"%")
+		i++
+	}
+	if len(opts.Tags) > 0 {
+		tagsJSON, _ := json.Marshal(opts.Tags)
+		clauses = append(clauses, fmt.Sprintf("tags ?| $%d::jsonb", i))
+		args = append(args, string(tagsJSON))
+		i++
+	}
+	if len(opts.TagsAll) > 0 {
+		tagsJSON, _ := json.Marshal(opts.TagsAll)
+		clauses = append(clauses, fmt.Sprintf("tags @> $%d", i))
+		args = append(args, string(tagsJSON))
+		i++
+	}
+	if opts.Since.Valid {
+		clauses = append(clauses, fmt.Sprintf("updated_at >= $%d", i))
+		args = append(args, opts.Since.Time)
+		i++
+	}
+	if opts.Until.Valid {
+		clauses = append(clauses, fmt.Sprintf("updated_at <= $%d", i))
+		args = append(args, opts.Until.Time)
+		i++
+	}
+
 	q := fmt.Sprintf(`
-		DELETE FROM memories
-		 WHERE actor_id = $1 AND source_event_id = $2 AND dimension IN (%s)
-	`, strings.Join(placeholders, ","))
-	_, err := tx.ExecContext(ctx, q, args...)
-	return err
+		SELECT memory_id, actor_id, dimension, namespace, content,
+		       tags, attributes, source_event_ids, reinforced_count,
+		       created_at, updated_at, expires_at
+		  FROM memories
+		 WHERE %s
+		 ORDER BY updated_at DESC
+		 LIMIT %d
+	`, strings.Join(clauses, " AND "), limit)
+
+	rows, err := s.DB.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanMemories(rows)
 }
 
+// RecallFilter is kept for backward compatibility with recall.go.
+// TODO(stage4): remove after recall.go is rewritten.
 type RecallFilter struct {
 	ActorID       string
 	NamespacePref string            // namespace prefix
@@ -91,21 +204,24 @@ type RecallFilter struct {
 }
 
 // QueryByPrefix returns memories whose namespace starts with prefix, ordered newest first.
+// TODO(stage4): remove after recall.go is rewritten.
 func (s *Store) QueryByPrefix(ctx context.Context, f RecallFilter) ([]Memory, error) {
 	args := []any{f.ActorID, f.NamespacePref + "%"}
 	clauses := []string{"actor_id = $1", "namespace LIKE $2"}
-	i := 3
+	idx := 3
 	for k, v := range f.AttrFilters {
-		clauses = append(clauses, fmt.Sprintf("attributes->>$%d = $%d", i, i+1))
+		clauses = append(clauses, fmt.Sprintf("attributes->>$%d = $%d", idx, idx+1))
 		args = append(args, k, v)
-		i += 2
+		idx += 2
 	}
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
 	}
 	q := fmt.Sprintf(`
-		SELECT memory_id, actor_id, dimension, namespace, content, attributes, updated_at
+		SELECT memory_id, actor_id, dimension, namespace, content,
+		       tags, attributes, source_event_ids, reinforced_count,
+		       created_at, updated_at, expires_at
 		  FROM memories
 		 WHERE %s
 		 ORDER BY updated_at DESC
@@ -116,12 +232,85 @@ func (s *Store) QueryByPrefix(ctx context.Context, f RecallFilter) ([]Memory, er
 		return nil, err
 	}
 	defer rows.Close()
+	return scanMemories(rows)
+}
+
+// DeleteAppendItemsForEvent removes prior append-dim writes for an event.
+// Used by extract_context retries to guarantee idempotency.
+func (s *Store) DeleteAppendItemsForEvent(ctx context.Context, tx *sql.Tx, eventID uuid.UUID, dims []string) error {
+	if len(dims) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(dims))
+	args := []any{eventID}
+	for i, d := range dims {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args = append(args, d)
+	}
+	q := fmt.Sprintf(`
+		DELETE FROM memories
+		 WHERE $1 = ANY(source_event_ids) AND dimension IN (%s)
+	`, strings.Join(placeholders, ","))
+	_, err := tx.ExecContext(ctx, q, args...)
+	return err
+}
+
+// DeleteAppendMemoriesForEvent is kept for backward compatibility.
+// TODO(stage4): remove.
+func (s *Store) DeleteAppendMemoriesForEvent(ctx context.Context, tx *sql.Tx, actor string, eventID uuid.UUID, dims []string) error {
+	return s.DeleteAppendItemsForEvent(ctx, tx, eventID, dims)
+}
+
+// UpsertConsolidatedMemory is kept for backward compatibility with meeting and
+// digest handlers. It now wraps InsertItem after deleting any prior row for
+// the same (actor, namespace) to preserve upsert semantics.
+// TODO(stage4): remove once meeting/digest use InsertItem directly.
+func (s *Store) UpsertConsolidatedMemory(ctx context.Context, tx *sql.Tx, m MemoryInput) error {
+	// Delete any prior row for same (actor, namespace).
+	_, err := tx.ExecContext(ctx,
+		`DELETE FROM memories WHERE actor_id=$1 AND namespace=$2`,
+		m.ActorID, m.Namespace)
+	if err != nil {
+		return err
+	}
+	return s.InsertAppendMemory(ctx, tx, m)
+}
+
+// scanMemories scans a result-set into []Memory.
+func scanMemories(rows *sql.Rows) ([]Memory, error) {
 	var out []Memory
 	for rows.Next() {
 		var m Memory
-		if err := rows.Scan(&m.ID, &m.ActorID, &m.Dimension, &m.Namespace, &m.Content, &m.Attributes, &m.UpdatedAt); err != nil {
+		var tagsRaw []byte
+		var sourceEventIDsStr []string
+		var expiresAt sql.NullTime
+
+		if err := rows.Scan(
+			&m.ID, &m.ActorID, &m.Dimension, &m.Namespace, &m.Content,
+			&tagsRaw, &m.Attributes, pq.Array(&sourceEventIDsStr), &m.ReinforcedCount,
+			&m.CreatedAt, &m.UpdatedAt, &expiresAt,
+		); err != nil {
 			return nil, err
 		}
+
+		// Parse tags JSON.
+		if len(tagsRaw) > 0 {
+			_ = json.Unmarshal(tagsRaw, &m.Tags)
+		}
+		if m.Tags == nil {
+			m.Tags = []string{}
+		}
+
+		// Parse source_event_ids strings to uuid.UUID.
+		m.SourceEventIDs = make([]uuid.UUID, 0, len(sourceEventIDsStr))
+		for _, s := range sourceEventIDsStr {
+			id, err := uuid.Parse(s)
+			if err == nil {
+				m.SourceEventIDs = append(m.SourceEventIDs, id)
+			}
+		}
+
+		m.ExpiresAt = expiresAt
 		out = append(out, m)
 	}
 	return out, rows.Err()
