@@ -72,8 +72,9 @@ Replaces today's DynamoDB actors table.
 | `display_name`  | text        |                                        |
 | `email`         | text        | Nullable; required for digest delivery |
 | `timezone`      | text        | IANA, default `UTC`                    |
-| `digest_enabled`| boolean     | Default `false`                        |
-| `created_at`    | timestamptz | Default `now()`                        |
+| `digest_enabled`    | boolean     | Default `false`                        |
+| `created_at`        | timestamptz | Default `now()`                        |
+| `episode_strategy`  | text        | `'flat'`, `'monthly_bucket'` (default), or `'disabled'` |
 
 ### `events`
 
@@ -240,7 +241,7 @@ Four parallel Claude calls via `errgroup`:
    - `daily_log` dimension: append at `/daily/<actor>/<YYYY-MM-DD>/log/`.
 2. **Biographical (about).** Same prompt as today. Trust user turns, trust assistant turns only when grounded in user-supplied material, skip code/path/port details. Always runs the consolidation prompt to enforce narrative paragraph shape. Upsert at `/about/<actor>/`.
 3. **Preferences.** Net-new prompt. Extract durable user preferences (coding style, tool choice, workflow). Append-only insert at `/preferences/<actor>/`.
-4. **Episodes.** Net-new prompt. Extract structured episodes (event + reflection pairs). Append-only inserts at `/episodes/<actor>/`. (The `facts` dimension was dropped — biographical facts go to `about`, project facts to `project`, task-domain facts to `task`.)
+4. **Episodes.** Net-new prompt. Extract structured episodes (event + reflection pairs). Append-only inserts at `/episodes/<actor>/[<YYYY-MM>/]` — per-actor: `flat`, monthly bucket, or disabled (controlled by `actors.episode_strategy`). (The `facts` dimension was dropped — biographical facts go to `about`, project facts to `project`, task-domain facts to `task`.)
 
 Wall time ≈ slowest call (~2–5s with Sonnet). Latency irrelevant — background job.
 

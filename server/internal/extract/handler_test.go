@@ -128,6 +128,23 @@ func TestExtractHandlerFirstWriteAllDimensions(t *testing.T) {
 	}
 }
 
+func TestExtractHandlerEpisodesDisabled(t *testing.T) {
+	s, h, evID := setup(t)
+	// Override the actor's episode_strategy to 'disabled'.
+	if _, err := s.DB.Exec(`UPDATE actors SET episode_strategy='disabled' WHERE actor_id='alice'`); err != nil {
+		t.Fatal(err)
+	}
+	payload, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: evID})
+	if err := h.Handle(context.Background(), payload); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	_ = s.DB.QueryRow(`SELECT count(*) FROM memories WHERE actor_id='alice' AND dimension='episodes'`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("expected 0 episode rows when strategy=disabled, got %d", n)
+	}
+}
+
 func TestExtractHandlerIdempotentOnRetry(t *testing.T) {
 	s, h, evID := setup(t)
 	payload, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: evID})

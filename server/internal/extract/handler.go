@@ -46,6 +46,14 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return fmt.Errorf("load event: %w", err)
 	}
 
+	actor, err := h.Store.GetActor(ctx, p.ActorID)
+	if err != nil {
+		return fmt.Errorf("load actor: %w", err)
+	}
+	if actor == nil {
+		return fmt.Errorf("actor %s not found", p.ActorID)
+	}
+
 	turnsText := turnsToText(turnsRaw)
 	projectName := project.String
 	date := createdAt.UTC().Format("2006-01-02")
@@ -104,19 +112,22 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	})
 
 	var ep EpisodesOutput
-	g.Go(func() error {
-		out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
-			Model:     h.Model,
-			System:    SystemEpisodes,
-			Messages:  []llm.Message{{Role: "user", Content: turnsText}},
-			MaxTokens: 768,
-		})
-		if err != nil {
+	episodesEnabled := actor.EpisodeStrategy != "disabled"
+	if episodesEnabled {
+		g.Go(func() error {
+			out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
+				Model:     h.Model,
+				System:    SystemEpisodes,
+				Messages:  []llm.Message{{Role: "user", Content: turnsText}},
+				MaxTokens: 768,
+			})
+			if err != nil {
+				return err
+			}
+			ep, err = ParseEpisodes(out.Text)
 			return err
-		}
-		ep, err = ParseEpisodes(out.Text)
-		return err
-	})
+		})
+	}
 
 	if err := g.Wait(); err != nil {
 		return err
@@ -290,15 +301,27 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		}
 	}
 
-	for _, e := range ep.Episodes {
-		text := "Event: " + e.Event + "\nReflection: " + e.Reflection
-		if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "episodes",
-			Namespace:     fmt.Sprintf("/episodes/%s/", p.ActorID),
-			Content:       text,
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
+	if episodesEnabled {
+		var episodesNamespace string
+		switch actor.EpisodeStrategy {
+		case "monthly_bucket":
+			month := createdAt.UTC().Format("2006-01")
+			episodesNamespace = fmt.Sprintf("/episodes/%s/%s/", p.ActorID, month)
+		case "flat":
+			fallthrough
+		default:
+			episodesNamespace = fmt.Sprintf("/episodes/%s/", p.ActorID)
+		}
+		for _, e := range ep.Episodes {
+			text := "Event: " + e.Event + "\nReflection: " + e.Reflection
+			if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
+				ActorID: p.ActorID, Dimension: "episodes",
+				Namespace:     episodesNamespace,
+				Content:       text,
+				SourceEventID: &p.EventID,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 
