@@ -15,7 +15,7 @@ import (
 func StartTestPG(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "postgres:16-alpine",
+	pg, err := postgres.Run(ctx, "pgvector/pgvector:pg16",
 		postgres.WithDatabase("mnemo"),
 		postgres.WithUsername("mnemo"),
 		postgres.WithPassword("mnemo"),

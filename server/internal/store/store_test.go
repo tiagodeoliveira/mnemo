@@ -13,7 +13,7 @@ import (
 func startPG(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
-	pg, err := postgres.Run(ctx, "postgres:16-alpine",
+	pg, err := postgres.Run(ctx, "pgvector/pgvector:pg16",
 		postgres.WithDatabase("mnemo"),
 		postgres.WithUsername("mnemo"),
 		postgres.WithPassword("mnemo"),
@@ -55,6 +55,13 @@ func TestMigrateUp(t *testing.T) {
 	if n != 4 {
 		t.Fatalf("expected 4 tables, got %d", n)
 	}
+
+	// Verify pgvector extension is present after migration.
+	var extVersion string
+	if err := s.DB.QueryRow(`SELECT extversion FROM pg_extension WHERE extname = 'vector'`).Scan(&extVersion); err != nil {
+		t.Fatalf("pgvector extension not found: %v", err)
+	}
+	t.Logf("pgvector extension version: %s", extVersion)
 
 	// Idempotent.
 	if err := s.Migrate(); err != nil {

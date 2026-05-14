@@ -1,7 +1,7 @@
 # Local development stack. Production uses docker-compose.deploy.yml.
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: mnemo-postgres-dev
     restart: unless-stopped
     environment:
