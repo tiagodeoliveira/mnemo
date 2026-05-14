@@ -19,13 +19,15 @@ Motivation: mnemo is designed as a memory service that could grow beyond a singl
 4. **Per-item provenance**: every event that touched an item is tracked in `source_event_ids text[]`.
 5. **LLM consolidation contract becomes a diff** (keep / reinforce / delete / update / insert) rather than a blob rewrite. Auditable, validatable, reversible.
 6. **Recall API returns items natively** with metadata. This is a breaking change from v1 (~17 hours of v1 lived) — the CLI and extension renderers update to display item lists rather than blobs.
+7. **Semantic search via pgvector**: every item carries an embedding. Two API surfaces expose it — `?q=<text>` on `/recall` for namespace-anchored semantic search, and a new `POST /search` endpoint for cross-dimension queries. Filters (namespace, dimension, tags, attributes, since/until) compose freely with similarity ranking.
 
 ## Non-goals (this spec)
 
-- Vector similarity (`?q=` still ignored). Items have content but no embedding column yet. Schema is reserved for pgvector to slot in later.
 - Cross-actor sharing or team memories.
 - Memory linking / graph relationships.
 - A UI / admin dashboard. Per-actor TTL overrides happen via SQL until a real management API exists.
+- Hybrid lexical+vector ranking (e.g., RRF, BM25 + cosine fusion). Pure cosine similarity in v2; revisit if relevance suffers.
+- Re-ranking with a cross-encoder. Top-K by raw similarity in v2.
 
 ## Schema
 
@@ -45,6 +47,7 @@ Motivation: mnemo is designed as a memory service that could grow beyond a singl
 | `created_at`       | timestamptz | Default `now()`. Permanent — never updated.                            |
 | `updated_at`       | timestamptz | Bumped on every reinforcement / update.                                |
 | `expires_at`       | timestamptz | Nullable. Hard TTL. NULL = never expires.                              |
+| `embedding`        | vector(1536)| Cosine-similarity space. Nullable until populated. Re-generated only on insert/update — `reinforce` never re-embeds. |
 
 The **partial unique index on `(actor_id, namespace)`** for consolidated dimensions is **dropped**. Each namespace can have many rows.
 
@@ -57,7 +60,17 @@ CREATE INDEX memories_expires_idx             ON memories (expires_at) WHERE exp
 CREATE INDEX memories_tags_gin                ON memories USING gin (tags);
 CREATE INDEX memories_attributes_gin          ON memories USING gin (attributes jsonb_path_ops);
 CREATE INDEX memories_content_fts             ON memories USING gin (to_tsvector('simple', content));
+-- pgvector HNSW index for cosine similarity. m=16, ef_construction=64 are
+-- the pgvector defaults; tuned higher (m=24, ef=128) if recall quality
+-- becomes a concern. At our scale, defaults suffice for years.
+CREATE INDEX memories_embedding_hnsw          ON memories USING hnsw (embedding vector_cosine_ops);
 ```
+
+### Postgres image change
+
+The `postgres:16-alpine` image lacks pgvector. Switch to `pgvector/pgvector:pg16` in both `docker-compose.yml` and `docker-compose.deploy.yml`. The pgvector team publishes prebuilt images that match each major Postgres release.
+
+The migration runs `CREATE EXTENSION IF NOT EXISTS vector;` before any `vector(N)` column is created.
 
 ### `actors` (additive)
 
@@ -210,9 +223,10 @@ The LLM can use any subset; operators can also assign tags manually via SQL.
 | `tag_mode=all` | Switch tag filter to ALL of the listed tags (AND semantics) |
 | `since=<YYYY-MM-DD>` | Items where `updated_at >= since` |
 | `until=<YYYY-MM-DD>` | Items where `updated_at <= until` |
-| `limit=<n>` | Cap items per dimension (default 100) |
+| `limit=<n>` | Cap items per dimension (default 100; max 200) |
 | `visible=true/false` | Reserved for future "render as markdown" mode; in v2 unused — clients always get JSON |
-| `q=<text>` | Reserved for future FTS / vector search; ignored today |
+| `q=<text>` | Semantic search. Returns items ordered by cosine similarity to the query embedding. Composable with all other filters. See [Embeddings & semantic search](#embeddings--semantic-search) for response shape changes when `q` is present. |
+| `min_similarity=<0..1>` | Filter results to items with cosine similarity ≥ threshold. Only meaningful with `q=`. Default unset (no threshold). |
 
 ### Removed in v2
 
@@ -250,42 +264,184 @@ The controlled vocabulary lives in code, per dimension. Adding a new tag means a
 - `deprecated`: hide from default recall unless `?include_deprecated=1`. Set by the LLM when an item is being soft-superseded but not deleted (rare; usually the LLM should just `delete`).
 - `archived`: same shape, different verb. For consciously-kept-but-not-relevant items.
 
+## Embeddings & semantic search
+
+### Embedding client (`internal/embed/`)
+
+Mirrors the structure of `internal/llm/`:
+
+```go
+type Client interface {
+    Embed(ctx context.Context, texts []string) ([][]float32, error)
+}
+```
+
+- `client.go` — interface + shared types
+- `openai.go` — default implementation (POSTs to `https://api.openai.com/v1/embeddings`)
+- `stub.go` — deterministic stub for tests (hash-of-text → fixed 1536-dim vector)
+
+The interface accepts a batch of texts and returns a batch of vectors. OpenAI's API supports up to 2048 inputs per call; for our scale we batch up to 100 at a time and almost always send single items.
+
+### Default implementation: OpenAI `text-embedding-3-small`
+
+- 1536 dimensions
+- ~$0.02 per 1M tokens
+- ~100ms p50 latency per call
+- Requires `OPENAI_API_KEY` env var
+
+The model ID is configurable via `MNEMO_EMBED_MODEL` env var (default `text-embedding-3-small`). Future swap to `text-embedding-3-large` (3072 dims, ~$0.13/1M tokens) is a model-string change PLUS a one-time backfill — the schema's `vector(1536)` would need a migration to `vector(3072)` if we change the model family. Stick with `-small` for v2.
+
+### When embeddings are generated
+
+| Action on an item | Re-embed? |
+|---|---|
+| `insert` | YES — embedding generated and written in the same tx as the row. |
+| `update` (content changes) | YES — new content, new embedding. |
+| `update` (tags only, content unchanged) | NO — short-circuit when `content` is unchanged. |
+| `reinforce` | NO — content unchanged. `updated_at`/`expires_at` bump, embedding is reused. |
+| `delete` | N/A — row is dropped. |
+
+This keeps embedding generation strictly proportional to *new content*, not to *every consolidation pass*.
+
+### Disabled mode
+
+`MNEMO_EMBED_DISABLED=1` skips embedding generation entirely. The `embedding` column stays NULL on new inserts. The `/search` endpoint and `?q=` parameter return HTTP 503 with `"semantic search disabled"`. Recall without `?q=` continues to work normally (it doesn't use the column).
+
+This mode exists for: (a) dev/CI runs without an OpenAI key, (b) cost-sensitive deployments that don't want the embedding dependency, (c) emergency disable if the embedding provider has an outage.
+
+### `POST /search` endpoint
+
+Cross-dimension semantic search.
+
+Request body:
+```json
+{
+  "q": "async runtimes in Go",
+  "dimensions": ["preferences", "project", "task"],
+  "tags": ["technical"],
+  "tag_mode": "any",
+  "namespace_prefix": "/projects/<actor>/",
+  "since": "2026-01-01",
+  "until": null,
+  "limit": 20,
+  "min_similarity": 0.3
+}
+```
+
+All fields except `q` are optional. If `dimensions` is omitted, search spans all dimensions. If `namespace_prefix` is omitted, all namespaces are eligible (within the actor's scope, enforced by the auth context).
+
+Response:
+```json
+{
+  "results": [
+    {
+      "id": "a1b2c3",
+      "dimension": "preferences",
+      "namespace": "/preferences/<actor>/",
+      "content": "uses Go for backend services with async patterns via goroutines",
+      "tags": ["language", "tool"],
+      "similarity": 0.87,
+      "created_at": "2024-09-01T...",
+      "updated_at": "2026-05-14T...",
+      "reinforced_count": 12
+    }
+  ],
+  "query_embedding_cost_tokens": 6
+}
+```
+
+Results are ordered by `similarity DESC`. The `query_embedding_cost_tokens` is informational — useful for operators tracking embedding spend.
+
+### `?q=` on `/recall`
+
+Adds semantic ordering to the existing namespace-anchored recall. The response shape stays as today's `/recall` (dimensions of items) but each dimension's items are ordered by similarity to `q` (instead of `updated_at DESC`), and a `similarity` field is added to each item.
+
+Use case: "show me my preferences related to async runtimes" → `GET /recall?preferences=1&q=async%20runtimes`.
+
+### Internal query path
+
+Both endpoints share `semanticSearch(ctx, opts)` in `internal/store/search.go`:
+
+```sql
+SELECT memory_id, dimension, namespace, content, tags, created_at, updated_at, reinforced_count,
+       1 - (embedding <=> $query_embedding) AS similarity
+  FROM memories
+ WHERE actor_id = $actor
+   AND ($dimensions IS NULL OR dimension = ANY($dimensions))
+   AND ($namespace_prefix IS NULL OR namespace LIKE $namespace_prefix || '%')
+   AND ($tags_any IS NULL OR tags ?| $tags_any)
+   AND ($tags_all IS NULL OR tags @> $tags_all::jsonb)
+   AND ($since IS NULL OR updated_at >= $since)
+   AND ($until IS NULL OR updated_at <= $until)
+   AND embedding IS NOT NULL
+ ORDER BY embedding <=> $query_embedding
+ LIMIT $limit;
+```
+
+The `<=>` operator is pgvector's cosine distance (`1 - <=>` gives cosine similarity). The HNSW index accelerates the ORDER BY when filters are loose; with many WHERE clauses Postgres falls back to a filtered-then-sorted scan, which is fine at our scale.
+
+`embedding IS NOT NULL` defensively excludes items that haven't been embedded yet (e.g., if the embed call failed during their insert — we still write the row but leave the column NULL, then a backfill job re-embeds them).
+
+### Embedding backfill job
+
+If embedding generation fails during item insert (provider down, rate limit, etc.), the row is written with `embedding = NULL` and the error is logged. A new job kind `backfill_embeddings` runs periodically (every 5 min), picks up rows where `embedding IS NULL`, batches them in groups of 50, and re-tries embedding. This makes embedding generation *eventually consistent* rather than blocking the consolidation tx.
+
+For v2 the inline path is the default; the backfill is the safety net. If we observe sustained inline failures, we can flip the default to async backfill via a config flag.
+
 ## Migration plan
 
-### Stage 1: Schema
+### Stage 1: Schema + pgvector
 
-One migration: `0005_item_model.up.sql`
+Switch the Postgres image in `docker-compose.yml` and `docker-compose.deploy.yml` from `postgres:16-alpine` to `pgvector/pgvector:pg16`.
+
+Migration `0005_item_model.up.sql`:
+- `CREATE EXTENSION IF NOT EXISTS vector;`
 - Drop the partial unique index `memories_consolidated_namespace_uq`
-- Add columns: `tags jsonb DEFAULT '[]'`, `source_event_ids uuid[] DEFAULT '{}'`, `reinforced_count int DEFAULT 1`, `expires_at timestamptz`
-- Add indexes per the schema section
+- Add columns: `tags jsonb DEFAULT '[]'`, `source_event_ids uuid[] DEFAULT '{}'`, `reinforced_count int DEFAULT 1`, `expires_at timestamptz`, `embedding vector(1536)`
+- Add indexes per the schema section (including the HNSW index on `embedding`)
 - `actors`: add `ttl_overrides jsonb DEFAULT '{}'`
+- Register the `backfill_embeddings` job kind (no schema change needed — `jobs.kind` is a free-form text column)
 
-### Stage 2: Code
+### Stage 2: Code — items + diff consolidation
 
-- Rewrite `consolidate.go`: new `ConsolidateItems()` function returns a diff struct. The existing `Consolidate()` and `ConsolidateFreshness()` are deprecated; keep them around briefly for non-item dimensions or just remove.
+- Rewrite `consolidate.go`: new `ConsolidateItems()` function returns a diff struct. The existing `Consolidate()` and `ConsolidateFreshness()` are removed (no longer used after this stage).
 - Rewrite `extract/handler.go`: consolidation section calls `ConsolidateItems()`, applies diff via new store methods (`ApplyMemoryDiff()`).
 - Add `store/memories_diff.go`: `ApplyMemoryDiff(ctx, tx, diff)` validates + applies in a single tx.
-- Update `api/recall.go`: query items by namespace + filters, return new response shape.
-- Rewrite `cli/src/commands/recall.ts` renderer for the item format.
-- Rewrite `extension/background.js` recall handling.
-- Update auris's `mnemo/recall.rs` to deserialize the new shape.
 
-### Stage 3: Migrate existing data
+### Stage 3: Code — embeddings + semantic search
+
+- Add `internal/embed/` package with `Client` interface, OpenAI implementation, deterministic stub.
+- Wire `embed.Client` construction in `cmd/mnemo-server/main.go` analogous to `llm.Client`: if `MNEMO_EMBED_DISABLED=1` use stub, else require `OPENAI_API_KEY` and use OpenAI.
+- `ApplyMemoryDiff()` calls `embed.Client.Embed()` for each item where the content is new or changed; persists the resulting vector to the `embedding` column. On failure: write the row with `embedding = NULL` and log; the backfill job recovers.
+- Add `internal/store/search.go`: `SemanticSearch(ctx, opts)` running the WHERE-AND-ORDER-BY-cosine query.
+- Add `POST /search` handler in `internal/api/search.go`.
+- Extend `internal/api/recall.go` to honor `?q=<text>` — embed the query, call `SemanticSearch` per dimension instead of the recency query.
+- Add `backfill_embeddings` job handler and register it in the worker pool's handlers map.
+
+### Stage 4: Code — clients
+
+- Rewrite `api/recall.go` to return the new item-shaped response.
+- Rewrite `cli/src/commands/recall.ts` renderer for the item format. Add `mnemo search "<query>" [--dimension=...] [--tags=...] [--limit=...]` subcommand.
+- Rewrite `extension/background.js` recall handling for the new shape.
+- Update auris's `packages/server/src/mnemo/recall.rs` to deserialize the new shape. (Separate branch in the auris repo.)
+
+### Stage 5: Migrate existing data
 
 One-shot script: `scripts/migrate-blobs-to-items.go`. For each blob row:
-1. Read content
-2. Call an LLM with a "split this consolidated memory into individual items, return JSON list of {content, tags}" prompt
-3. Insert N item rows
-4. Delete the blob row
+1. Read `content`.
+2. Call the LLM with a "split this consolidated memory into individual items; return JSON `[{content, tags}, ...]`" prompt.
+3. For each resulting item: insert row, generate embedding, write embedding.
+4. Delete the blob row.
 
 For the dev DB this is throwaway (truncate works). If we deploy the v1 blob model first and then migrate, we run this script once on production data.
 
-### Stage 4: Update smoke
+### Stage 6: Update smoke
 
 The smoke must update to reflect:
 - Single-row count assertions become per-namespace-item count assertions (e.g., "preferences has 6+ items" instead of "preferences has 1 row")
 - The round-2 reinforcement check becomes "reinforced_count > 1 for these specific items"
 - The round-2 contradiction check becomes "deleted_count > 0 OR the contradicted item is no longer in recall"
+- New smoke step: a `POST /search` request with a query that semantically matches an inserted item (e.g., "queue systems" should match the "uses Postgres SKIP LOCKED for job queues" item). Assert similarity > 0.5 and the right item is in the top result.
 
 ## Open decisions (need confirmation before implementation)
 
@@ -327,26 +483,28 @@ The smoke must update to reflect:
 These ship together in the cutover:
 
 1. `/recall` response shape (dimensions of items, not blob content)
-2. CLI `mnemo recall --preferences` output format (rendered item list)
+2. CLI `mnemo recall --preferences` output format (rendered item list); new `mnemo search` subcommand
 3. Chrome extension popup display (item list)
 4. Auris `mnemo::recall` Rust deserialization
 5. Smoke script expectations
 6. Existing dev-database memory rows (truncated; data is throwaway)
+7. Postgres image: `postgres:16-alpine` → `pgvector/pgvector:pg16`
 
 All clients land in lockstep with the server change. Since no production users exist yet, this is a same-day coordinated rollout, not a rolling migration.
 
 ## Effort estimate
 
-- Schema + migration: 0.5 day
-- consolidate.go rewrite + new diff prompts: 1 day
-- handler.go rewrite: 0.5 day
-- store/memories_diff.go + tests: 0.5 day
-- api/recall.go rewrite: 0.5 day
-- CLI renderer + extension + auris updates: 1 day
-- Smoke + integration test updates: 0.5 day
-- Migration script for existing blob data: 0.5 day (or skip if we agree dev data is throwaway)
+- Schema + migration + pgvector image swap: 0.5 day
+- `consolidate.go` rewrite + new diff prompts (4 dimensions): 1 day
+- `extract/handler.go` rewrite + `store/memories_diff.go` + tests: 1 day
+- `internal/embed/` package (interface, OpenAI impl, stub) + wiring: 0.5 day
+- `internal/store/search.go` + `POST /search` handler + `?q=` on /recall + backfill job: 1 day
+- `api/recall.go` rewrite for item shape: 0.5 day
+- CLI renderer + `mnemo search` subcommand + extension + auris updates: 1 day
+- Smoke + integration test updates (including a semantic-search assertion): 0.5 day
+- Migration script for existing blob data: 0.5 day (skippable for dev)
 
-Total: **~5 focused days** of work.
+Total: **~6 focused days** of work.
 
 ## Risks
 
@@ -356,10 +514,13 @@ Total: **~5 focused days** of work.
 | Diff-based consolidation loses subtle merges the blob model handled well | Hold the smoke as the bar; round-2 checks (single-row → fixed-item-count, with reinforcement counts) catch regressions. |
 | Items proliferate without bound when the LLM keeps `insert`-ing instead of `reinforce`-ing | TTL + per-actor recall limits cap blast radius. Sweeper deletes stale items. If proliferation persists, tighten the consolidation prompt's "prefer reinforce over insert" guidance. |
 | Tag vocabulary becomes the wrong shape and a forced refactor later | Vocabulary is in code; rename + migration script is mechanical. The risk is low because vocabulary is short. |
+| OpenAI embedding API outage blocks ingestion | Inline embed failure → write row with NULL embedding + log. Backfill job recovers when API returns. `MNEMO_EMBED_DISABLED=1` is an emergency kill switch — recall keeps working, `?q=` / `/search` return 503. |
+| Cosine similarity returns semantically-near but contextually-wrong items | `min_similarity` threshold in search params lets clients filter weak matches. Future option: hybrid lexical+vector ranking — listed as non-goal for v2. |
+| Embedding cost scales with extraction volume (one call per new/changed item) | At our scale (50-200 events/day, ~5 items per consolidation) we're talking pennies per month. Track via `query_embedding_cost_tokens` in /search responses and a periodic SQL aggregation if it ever matters. |
+| `vector(1536)` locks us to one embedding model family | Mitigation: model swap is a one-time backfill via the backfill job + a column type migration. Documented; not done speculatively. |
 
 ## What's NOT in scope here (explicit non-coverage)
 
-- Vector / similarity search
 - Memory linking ("this fact references that one")
 - Compression of older items into a summary row (mnemo's own "compaction")
 - Per-item ACLs / sharing
