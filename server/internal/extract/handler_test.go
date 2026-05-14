@@ -71,8 +71,8 @@ func setup(t *testing.T) (*store.Store, *Handler, uuid.UUID) {
 		switch req.System {
 		case SystemPreferences:
 			return llm.CompleteResponse{Text: `{"preferences":["use Go for backend services"]}`}, nil
-		case SystemFactsEpisodes:
-			return llm.CompleteResponse{Text: `{"facts":["sky is blue"],"episodes":[]}`}, nil
+		case SystemEpisodes:
+			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
 		}
 		return llm.CompleteResponse{Text: ""}, nil
 	}}
@@ -109,10 +109,10 @@ func TestExtractHandlerFirstWriteAllDimensions(t *testing.T) {
 	// - about (1 row, always consolidated)
 	// - daily_log (1 row)
 	// - preferences (1 row)
-	// - facts (1 row)
 	// - episodes (0 rows — empty array from stub)
+	// - facts dimension was dropped
 	for dim, want := range map[string]int{
-		"project": 1, "task": 1, "about": 1, "daily_log": 1, "preferences": 1, "facts": 1,
+		"project": 1, "task": 1, "about": 1, "daily_log": 1, "preferences": 1,
 	} {
 		if counts[dim] != want {
 			t.Errorf("dim %s: want %d got %d", dim, want, counts[dim])
@@ -120,6 +120,9 @@ func TestExtractHandlerFirstWriteAllDimensions(t *testing.T) {
 	}
 	if counts["episodes"] != 0 {
 		t.Errorf("episodes: want 0 got %d", counts["episodes"])
+	}
+	if counts["facts"] != 0 {
+		t.Errorf("facts dimension should be gone: got %d rows", counts["facts"])
 	}
 }
 
@@ -134,7 +137,7 @@ func TestExtractHandlerIdempotentOnRetry(t *testing.T) {
 	if err := h.Handle(context.Background(), payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, dim := range []string{"preferences", "facts", "daily_log"} {
+	for _, dim := range []string{"preferences", "daily_log"} {
 		var n int
 		if err := s.DB.QueryRow(`SELECT count(*) FROM memories WHERE actor_id='alice' AND dimension=$1`, dim).Scan(&n); err != nil {
 			t.Fatal(err)

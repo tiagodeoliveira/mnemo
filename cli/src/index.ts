@@ -63,7 +63,6 @@ program
   .command('recall')
   .description('Recall memories (pass one or more dimension flags)')
   .option('--preferences', 'Include preferences')
-  .option('--facts', 'Include facts')
   .option('--episodes', 'Include episodes')
   .option('--about', 'Include about-me biographical profile')
   .option('--project [name]', 'Include project memories (auto-detected from git if no name given)')
@@ -82,7 +81,7 @@ program
       const hasTask = opts.task !== undefined;
       const hasDate = opts.date !== undefined || opts.daily;
       const hasMeeting = opts.meeting !== undefined;
-      const hasDimension = opts.preferences || opts.facts || opts.episodes || opts.about || hasProject || hasTask || hasDate || hasMeeting || opts.all;
+      const hasDimension = opts.preferences || opts.episodes || opts.about || hasProject || hasTask || hasDate || hasMeeting || opts.all;
 
       if (!hasDimension) {
         if (opts.q) {
@@ -103,7 +102,6 @@ program
       const date = opts.date || (opts.daily || opts.all ? localDate() : undefined);
 
       const wantPreferences = opts.all || opts.preferences;
-      const wantFacts = opts.all || opts.facts;
       const wantEpisodes = opts.all || opts.episodes;
       const wantAbout = opts.all || opts.about;
 
@@ -113,7 +111,6 @@ program
         auth0ClientId: config.auth0ClientId,
         workstation: config.workstation,
         preferences: wantPreferences,
-        facts: wantFacts,
         episodes: wantEpisodes,
         about: wantAbout,
         project,

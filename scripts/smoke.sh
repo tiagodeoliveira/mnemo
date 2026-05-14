@@ -168,7 +168,7 @@ post_event() {
 }
 
 send_rich_event() {
-  step "POST /events — rich coding event (keywords: 'rustacean', 'Xanxerê', 'Principal Engineer', 'SKIP LOCKED')"
+  step "POST /events — rich coding event (keywords: 'rustacean', 'Principal Engineer', 'SKIP LOCKED', 'deployed mnemo-smoke')"
   local body
   body=$(jq -c -n --arg sid "$RUN_ID-1" '{
     session_id: $sid,
@@ -281,7 +281,6 @@ check_dim() {
 run_checks() {
   step "verify each dimension"
   check_dim "preferences"   "/preferences/${ACTOR}/%"                       "rustacean"
-  check_dim "facts"         "/facts/${ACTOR}/%"                             "Xanxerê"
   check_dim "episodes"      "/episodes/${ACTOR}/%"                          "deployed mnemo-smoke"
   check_dim "about"         "/about/${ACTOR}/"                              "Principal Engineer"
   check_dim "project"       "/projects/${ACTOR}/mnemo-smoke/"               "SKIP LOCKED"

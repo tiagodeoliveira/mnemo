@@ -103,18 +103,18 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	})
 
-	var fx FactsEpisodesOutput
+	var ep EpisodesOutput
 	g.Go(func() error {
 		out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
 			Model:     h.Model,
-			System:    SystemFactsEpisodes,
+			System:    SystemEpisodes,
 			Messages:  []llm.Message{{Role: "user", Content: turnsText}},
 			MaxTokens: 768,
 		})
 		if err != nil {
 			return err
 		}
-		fx, err = ParseFactsEpisodes(out.Text)
+		ep, err = ParseEpisodes(out.Text)
 		return err
 	})
 
@@ -196,7 +196,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 
 	// Idempotency: wipe prior append-dim writes for this event before re-inserting.
 	if err := h.Store.DeleteAppendMemoriesForEvent(ctx, tx, p.ActorID, p.EventID,
-		[]string{"preferences", "facts", "episodes", "daily_log"}); err != nil {
+		[]string{"preferences", "episodes", "daily_log"}); err != nil {
 		return err
 	}
 
@@ -258,22 +258,8 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		}
 	}
 
-	for _, f := range fx.Facts {
-		if strings.TrimSpace(f) == "" {
-			continue
-		}
-		if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
-			ActorID: p.ActorID, Dimension: "facts",
-			Namespace:     fmt.Sprintf("/facts/%s/", p.ActorID),
-			Content:       f,
-			SourceEventID: &p.EventID,
-		}); err != nil {
-			return err
-		}
-	}
-
-	for _, ep := range fx.Episodes {
-		text := "Event: " + ep.Event + "\nReflection: " + ep.Reflection
+	for _, e := range ep.Episodes {
+		text := "Event: " + e.Event + "\nReflection: " + e.Reflection
 		if err := h.Store.InsertAppendMemory(ctx, tx, store.MemoryInput{
 			ActorID: p.ActorID, Dimension: "episodes",
 			Namespace:     fmt.Sprintf("/episodes/%s/", p.ActorID),

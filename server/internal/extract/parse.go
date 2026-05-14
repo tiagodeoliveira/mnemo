@@ -70,9 +70,8 @@ type PreferencesOutput struct {
 	Preferences []string `json:"preferences"`
 }
 
-// FactsEpisodesOutput is the JSON shape from SystemFactsEpisodes.
-type FactsEpisodesOutput struct {
-	Facts    []string `json:"facts"`
+// EpisodesOutput is the JSON shape from SystemEpisodes.
+type EpisodesOutput struct {
 	Episodes []struct {
 		Event      string `json:"event"`
 		Reflection string `json:"reflection"`
@@ -97,7 +96,7 @@ func ParsePreferences(s string) (PreferencesOutput, error) {
 	return out, strictUnmarshal(s, &out)
 }
 
-func ParseFactsEpisodes(s string) (FactsEpisodesOutput, error) {
-	var out FactsEpisodesOutput
+func ParseEpisodes(s string) (EpisodesOutput, error) {
+	var out EpisodesOutput
 	return out, strictUnmarshal(s, &out)
 }

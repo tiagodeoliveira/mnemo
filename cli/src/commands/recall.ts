@@ -6,7 +6,6 @@ export interface RecallOptions {
   auth0ClientId: string;
   workstation: string;
   preferences?: boolean;
-  facts?: boolean;
   episodes?: boolean;
   about?: boolean;
   project?: string;
@@ -26,7 +25,6 @@ interface MemoryRecord {
 
 interface RecallResponse {
   preferences?: MemoryRecord[];
-  facts?: MemoryRecord[];
   episodes?: MemoryRecord[];
   about?: MemoryRecord[];
   project?: {
@@ -55,7 +53,6 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
 
   const params = new URLSearchParams();
   if (options.preferences) params.set('preferences', 'true');
-  if (options.facts) params.set('facts', 'true');
   if (options.episodes) params.set('episodes', 'true');
   if (options.about) params.set('about', 'true');
   if (options.meeting) params.set('meeting', options.meeting);
@@ -163,9 +160,6 @@ export function formatRecallOutput(response: RecallResponse, visibleOrOpts: bool
   }
   if (response.preferences) {
     sections.push(formatBulletSection('Preferences', response.preferences, extractPreference));
-  }
-  if (response.facts) {
-    sections.push(formatBulletSection('Facts', response.facts, (c) => c));
   }
   if (response.episodes) {
     sections.push(formatEpisodeSection(response.episodes));

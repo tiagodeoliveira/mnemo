@@ -60,8 +60,8 @@ NONE`}, nil
 		switch req.System {
 		case extract.SystemPreferences:
 			return llm.CompleteResponse{Text: `{"preferences":["use Go"]}`}, nil
-		case extract.SystemFactsEpisodes:
-			return llm.CompleteResponse{Text: `{"facts":["sky is blue"],"episodes":[]}`}, nil
+		case extract.SystemEpisodes:
+			return llm.CompleteResponse{Text: `{"episodes":[]}`}, nil
 		}
 		return llm.CompleteResponse{Text: ""}, nil
 	}}

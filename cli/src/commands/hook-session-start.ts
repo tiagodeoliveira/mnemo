@@ -28,7 +28,6 @@ export async function executeHookSessionStart(input: HookInput): Promise<string 
     auth0ClientId: config.auth0ClientId,
     workstation: config.workstation,
     preferences: true,
-    facts: true,
     about: true,
     project,
     task: 'coding',

@@ -131,22 +131,64 @@ Rules:
 - Empty array if no preferences were expressed.
 - Output JSON only. No prose, no code fences.`
 
-// SystemFactsEpisodes is net-new for the Go rewrite.
-const SystemFactsEpisodes = `Extract general facts and structured episodes from this conversation.
+// SystemEpisodes: net-new for the rewrite. Extracts discrete event+reflection
+// pairs. Facts as a separate dimension was dropped — biographical facts go to
+// `about`, project facts to `project`, task-domain facts to `task`.
+const SystemEpisodes = `Extract structured episodes from this conversation.
 
 Return a single JSON object:
 {
-  "facts":    ["string", ...],
   "episodes": [{ "event": "string", "reflection": "string" }, ...]
 }
 
-Rules for facts:
-- Durable facts about the world, the user's environment, or named entities.
-- NOT preferences (those go in a separate dimension).
-- Skip code/paths/version strings.
-
-Rules for episodes:
-- A discrete event the user described, paired with their reflection or takeaway.
+Rules:
+- An episode is a discrete event the user described, paired with their reflection or takeaway.
 - Skip if no reflection is apparent.
+- Skip code/paths/version strings.
+- Empty array if no episodes match.
+- Output JSON only.`
 
-Empty arrays if nothing matches. Output JSON only.`
+// SystemFreshnessConsolidate is the freshness-aware consolidation prompt for
+// preferences and facts. Like SystemAboutConsolidate / SystemProjectTaskConsolidate,
+// it's sent as a single user message via fmt.Sprintf. Placeholders, in order:
+//
+//	%s[0] — dimension label (e.g. "preferences", "facts")
+//	%s[1] — today's date (YYYY-MM-DD, UTC)
+//	%s[2] — existing record's last_updated timestamp (YYYY-MM-DD), or "(n/a)"
+//	%s[3] — existing record body (the prior consolidated content), or "(none yet)"
+//	%s[4] — newly-extracted content from THIS conversation
+//
+// Usage: fmt.Sprintf(SystemFreshnessConsolidate, dim, today, existingDate, existingText, newContent)
+//
+// TODO(tiago): the RULES block below is intentionally a placeholder.
+// What should the LLM actually do with stale / contradictory / reinforced items?
+// Fill in 5-8 numbered rules describing your desired behavior. See the comment
+// block above the rules for the levers you have.
+const SystemFreshnessConsolidate = `You are maintaining a long-lived %s record for a personal memory system.
+
+The record is a single document you rewrite from scratch each time. You can think of it as a markdown file that has been edited over months. Older entries linger unless you actively prune them; freshly-reinforced entries should be promoted; contradictions should be resolved in favor of the most recent statement.
+
+CONTEXT:
+- Today's date: %s
+- Existing record was last updated: %s
+- The existing record's content follows.
+- After that, the new content to incorporate follows.
+
+RULES:
+1. Each entry is a single markdown bullet on its own line, starting with "- ".
+2. Every bullet ends with a date marker "(YYYY-MM-DD)" indicating the last date the fact was reinforced.
+3. When the new content reinforces an existing bullet — even paraphrased — bump that bullet's date to today and keep the more concise phrasing.
+4. When the new content contradicts an existing bullet, drop the existing bullet silently (no audit trail) and add the new statement as a fresh bullet with today's date.
+5. When the new content introduces a fact not present in the existing record, add it as a new bullet with today's date.
+6. Drop any bullet whose date is more than 12 months older than today AND not reinforced today.
+7. Keep bullets concise — one line, no sub-bullets, no headers, no sections, no introductory text.
+8. Output ONLY the full updated record. No preamble, no explanation. Empty output is valid if every bullet should be dropped.
+
+EXISTING RECORD:
+%s
+
+NEW CONTENT TO INCORPORATE:
+%s
+
+Output ONLY the merged record — no preamble, no explanation.`
+

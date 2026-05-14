@@ -51,9 +51,6 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if q.Get("preferences") != "" {
 		reqs = append(reqs, req{"preferences", "/preferences/" + actor + "/"})
 	}
-	if q.Get("facts") != "" {
-		reqs = append(reqs, req{"facts", "/facts/" + actor + "/"})
-	}
 	if q.Get("episodes") != "" {
 		reqs = append(reqs, req{"episodes", "/episodes/" + actor + "/"})
 	}

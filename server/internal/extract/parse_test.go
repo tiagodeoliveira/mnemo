@@ -49,11 +49,11 @@ func TestParsePreferencesStripsCodeFence(t *testing.T) {
 	}
 }
 
-func TestParseFactsEpisodes(t *testing.T) {
-	in := `{"facts":["sky is blue"],"episodes":[{"event":"shipped X","reflection":"felt good"}]}`
-	got, err := ParseFactsEpisodes(in)
+func TestParseEpisodes(t *testing.T) {
+	in := `{"episodes":[{"event":"shipped X","reflection":"felt good"}]}`
+	got, err := ParseEpisodes(in)
 	if err != nil { t.Fatal(err) }
-	if got.Facts[0] != "sky is blue" || got.Episodes[0].Event != "shipped X" {
+	if got.Episodes[0].Event != "shipped X" {
 		t.Fatalf("parse: %+v", got)
 	}
 }
