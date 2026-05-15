@@ -55,11 +55,6 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): MnemoConfi
     throw new Error(`Missing or invalid apiUrl in config: ${configPath}. Run 'mnemo install' to create one.`);
   }
 
-  // Warn if someone still has apiKey in their config but no auth0 fields yet.
-  if (raw.apiKey && !raw.auth0Domain && !raw.auth0Audience && !raw.auth0ClientId) {
-    process.stderr.write(`[mnemo] apiKey is no longer used; run 'mnemo login'\n`);
-  }
-
   const defaults = raw.defaults as Record<string, unknown> | undefined;
 
   return {
