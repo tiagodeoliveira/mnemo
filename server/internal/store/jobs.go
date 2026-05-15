@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 type JobKind string
@@ -86,6 +87,28 @@ func (s *Store) CompleteJob(ctx context.Context, id int64) error {
 		UPDATE jobs SET state='done', completed_at=now(), last_error=NULL WHERE job_id=$1
 	`, id)
 	return err
+}
+
+// ReleaseStaleLocks resets state='running' rows whose locked_at is older
+// than threshold back to state='pending', preserving attempts so retries
+// continue at the same count.
+//
+// Distinct from ReclaimStaleJobs (boot-time, no threshold) — this is the
+// continuous reaper that catches mid-flight worker crashes while OTHER
+// instances are still running.
+func (s *Store) ReleaseStaleLocks(ctx context.Context, threshold time.Duration) (int64, error) {
+	thresholdSecs := int(threshold.Seconds())
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE jobs
+		   SET state = 'pending', locked_by = NULL, locked_at = NULL
+		 WHERE state = 'running'
+		   AND locked_at < now() - make_interval(secs => $1)
+	`, thresholdSecs)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // FailJob marks pending again with backoff, or 'failed' after maxAttempts.

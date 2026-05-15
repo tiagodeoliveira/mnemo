@@ -129,13 +129,19 @@ func main() {
 	poolDone := make(chan struct{})
 	go func() { pool.Run(ctx); close(poolDone) }()
 
-	sched := &digest.Scheduler{Store: s, Logger: logger, DigestHour: 19}
-	go sched.Run(ctx)
+	// Digest scheduler — leader-only.
+	go queue.RunAsLeader(ctx, s.DB, logger, "digest_scheduler", queue.LockKeyDigestScheduler, 30*time.Second, func(ctx context.Context) {
+		sched := &digest.Scheduler{Store: s, Logger: logger, DigestHour: 19}
+		sched.Run(ctx)
+	})
 
-	go queue.Sweeper(ctx, s, logger, 7*24*time.Hour, time.Hour)
+	// Sweeper — leader-only.
+	go queue.RunAsLeader(ctx, s.DB, logger, "sweeper", queue.LockKeySweeper, 30*time.Second, func(ctx context.Context) {
+		queue.Sweeper(ctx, s, logger, 7*24*time.Hour, time.Hour)
+	})
 
-	// Backfill embeddings scheduler: runs every 5 minutes.
-	go func() {
+	// Backfill embeddings scheduler — leader-only.
+	go queue.RunAsLeader(ctx, s.DB, logger, "backfill_scheduler", queue.LockKeyBackfillScheduler, 30*time.Second, func(ctx context.Context) {
 		t := time.NewTicker(5 * time.Minute)
 		defer t.Stop()
 		for {
@@ -156,7 +162,13 @@ func main() {
 				_ = tx.Commit()
 			}
 		}
-	}()
+	})
+
+	// Reaper — leader-only.
+	go queue.RunAsLeader(ctx, s.DB, logger, "reaper", queue.LockKeyReaper, 30*time.Second, func(ctx context.Context) {
+		r := &queue.Reaper{Store: s, Logger: logger, Threshold: 90 * time.Second, Interval: 60 * time.Second}
+		r.Run(ctx)
+	})
 
 	srv := &http.Server{
 		Addr: ":" + cfg.Port,

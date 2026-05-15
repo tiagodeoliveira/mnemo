@@ -122,7 +122,11 @@ func (p *Pool) loop(ctx context.Context, id string) {
 			p.failWithRetry(ctx, j.JobID, j.Attempts, "no handler for kind: "+string(j.Kind), 0, 1)
 			continue
 		}
-		if err := h(ctx, j.Payload); err != nil {
+		stopHB := p.heartbeat(ctx, j.JobID)
+		err = h(ctx, j.Payload)
+		stopHB()
+
+		if err != nil {
 			p.logger.Warn("job failed", "worker", id, "kind", j.Kind, "job_id", j.JobID, "attempts", j.Attempts, "err", err)
 			p.failWithRetry(ctx, j.JobID, j.Attempts, err.Error(), BackoffSeconds(j.Attempts), MaxAttempts)
 			continue
@@ -136,5 +140,41 @@ func sleepJitter(ctx context.Context, lo, hi time.Duration) {
 	select {
 	case <-ctx.Done():
 	case <-time.After(d):
+	}
+}
+
+// heartbeat keeps a job's locked_at fresh while the handler runs.
+// Returns a cancel function. The goroutine exits when cancel() is called
+// or ctx is done.
+//
+// stopHB must be called BEFORE FailJob/CompleteJob so the heartbeat goroutine
+// doesn't race with the state transition.
+func (p *Pool) heartbeat(ctx context.Context, jobID int64) (cancel func()) {
+	stopCh := make(chan struct{})
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_, err := p.store.DB.ExecContext(ctx,
+					`UPDATE jobs SET locked_at = now()
+					  WHERE job_id = $1 AND state = 'running'`, jobID)
+				if err != nil {
+					p.logger.Warn("heartbeat update failed", "job_id", jobID, "err", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		select {
+		case <-stopCh:
+		default:
+			close(stopCh)
+		}
 	}
 }
