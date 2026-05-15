@@ -1,8 +1,9 @@
-import { localDate } from '../date';
+import { getAccessToken } from '../auth';
 
 export interface PushOptions {
   apiUrl: string;
-  apiKey: string;
+  auth0Domain: string;
+  auth0ClientId: string;
   sessionId: string;
   turns: Array<{ role: string; content: string }>;
   project?: string;
@@ -13,30 +14,30 @@ export interface PushOptions {
 }
 
 export async function executePush(options: PushOptions): Promise<void> {
-  const now = new Date();
-  const context: Record<string, unknown> = {
+  const token = await getAccessToken({ domain: options.auth0Domain, clientId: options.auth0ClientId });
+  if (!token) {
+    throw new Error("Not logged in. Run 'mnemo login' first.");
+  }
+
+  const body: Record<string, unknown> = {
+    session_id: options.sessionId,
+    turns: options.turns,
+    source: options.source || 'unknown',
     workstation: options.workstation,
     workdir: options.workdir,
-    timestamp: now.toISOString(),
-    date: localDate(now),
   };
-  if (options.project) context.project = options.project;
-  context.source = options.source || 'unknown';
+  if (options.project) body.project = options.project;
   if (options.attributes && Object.keys(options.attributes).length > 0) {
-    context.attributes = options.attributes;
+    body.attributes = options.attributes;
   }
 
   const response = await fetch(`${options.apiUrl}/events`, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': options.apiKey,
+      'content-type': 'application/json',
+      'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({
-      sessionId: options.sessionId,
-      turns: options.turns,
-      context,
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!response.ok) {

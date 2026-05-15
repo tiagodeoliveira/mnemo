@@ -1,0 +1,22 @@
+# Local development stack. Production uses docker-compose.deploy.yml.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mnemo-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mnemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnemo}
+      POSTGRES_DB: ${POSTGRES_DB:-mnemo}
+    ports:
+      - "5432:5432"
+    volumes:
+      - mnemo-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mnemo} -d ${POSTGRES_DB:-mnemo}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mnemo-pg-data:

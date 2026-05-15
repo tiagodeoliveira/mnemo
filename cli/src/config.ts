@@ -4,12 +4,18 @@ import * as path from 'path';
 
 export interface MnemoConfig {
   apiUrl: string;
-  apiKey: string;
+  auth0Domain: string;
+  auth0Audience: string;
+  auth0ClientId: string;
   workstation: string;
   defaults: {
     visible: boolean;
   };
 }
+
+const DEFAULT_AUTH0_DOMAIN   = 'dev-jrva0wzk3qkdxcar.us.auth0.com';
+const DEFAULT_AUTH0_AUDIENCE = 'https://mnemo.tiago.tools';
+const DEFAULT_AUTH0_CLIENT_ID = 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS';
 
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.mnemo', 'config.json');
 
@@ -19,7 +25,6 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): MnemoConfi
   }
 
   // Warn (but never fail) if the config file is readable by group or others.
-  // The file contains an API key, so 0o600 is the expected permission mask.
   if (process.platform !== 'win32') {
     try {
       const mode = fs.statSync(configPath).mode & 0o777;
@@ -44,15 +49,19 @@ export function loadConfig(configPath: string = DEFAULT_CONFIG_PATH): MnemoConfi
   if (!raw.apiUrl || typeof raw.apiUrl !== 'string') {
     throw new Error(`Missing or invalid apiUrl in config: ${configPath}. Run 'mnemo install' to create one.`);
   }
-  if (!raw.apiKey || typeof raw.apiKey !== 'string') {
-    throw new Error(`Missing or invalid apiKey in config: ${configPath}. Run 'mnemo install' to create one.`);
+
+  // Warn if someone still has apiKey in their config but no auth0 fields yet.
+  if (raw.apiKey && !raw.auth0Domain && !raw.auth0Audience && !raw.auth0ClientId) {
+    process.stderr.write(`[mnemo] apiKey is no longer used; run 'mnemo login'\n`);
   }
 
   const defaults = raw.defaults as Record<string, unknown> | undefined;
 
   return {
     apiUrl: raw.apiUrl,
-    apiKey: raw.apiKey,
+    auth0Domain: typeof raw.auth0Domain === 'string' ? raw.auth0Domain : DEFAULT_AUTH0_DOMAIN,
+    auth0Audience: typeof raw.auth0Audience === 'string' ? raw.auth0Audience : DEFAULT_AUTH0_AUDIENCE,
+    auth0ClientId: typeof raw.auth0ClientId === 'string' ? raw.auth0ClientId : DEFAULT_AUTH0_CLIENT_ID,
     workstation: (raw.workstation as string) || os.hostname(),
     defaults: {
       visible: typeof defaults?.visible === 'boolean' ? (defaults.visible as boolean) : true,

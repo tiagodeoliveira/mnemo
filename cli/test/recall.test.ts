@@ -3,286 +3,166 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
 
-import { executeRecall, formatRecallOutput } from '../src/commands/recall';
+vi.mock('../src/auth', () => ({
+  getAccessToken: vi.fn().mockResolvedValue('mock-jwt'),
+}));
 
-const sampleResponse = {
-  preferences: [
-    { id: 'r1', content: 'Prefers TypeScript and functional style', score: 0.95, createdAt: '' },
-  ],
-  facts: [
-    { id: 'r2', content: 'Senior engineer working on distributed systems', score: 0.9, createdAt: '' },
-  ],
-  episodes: [],
-  project: {
-    name: 'mnemo',
-    memories: [
-      { id: 'r3', content: 'Chose CDK over SAM for infrastructure', score: 0.85, createdAt: '' },
-    ],
-  },
+import { executeRecall, formatRecallForHook } from '../src/commands/recall';
+import { getAccessToken } from '../src/auth';
+
+const baseOpts = {
+  apiUrl: 'https://api.example.com/v1',
+  auth0Domain: 'tenant.us.auth0.com',
+  auth0ClientId: 'client-123',
+  workstation: 'laptop',
 };
 
-describe('recall command', () => {
+const sampleResponse = {
+  dimensions: [
+    {
+      dimension: 'preferences',
+      namespace: '/preferences/dev-actor/',
+      items: [
+        {
+          id: 'p1',
+          content: 'Prefers TypeScript and functional style',
+          tags: ['language'],
+          created_at: '2026-05-01T00:00:00Z',
+          updated_at: '2026-05-10T00:00:00Z',
+          reinforced_count: 2,
+        },
+      ],
+    },
+    {
+      dimension: 'project',
+      namespace: '/projects/dev-actor/mnemo/',
+      items: [
+        {
+          id: 'pr1',
+          content: 'Chose Postgres + pgvector over a vector DB',
+          tags: ['architecture'],
+          created_at: '2026-05-05T00:00:00Z',
+          updated_at: '2026-05-05T00:00:00Z',
+          reinforced_count: 1,
+        },
+      ],
+    },
+  ],
+};
+
+describe('executeRecall', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getAccessToken).mockResolvedValue('mock-jwt');
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(sampleResponse),
     });
   });
 
-  it('passes dimension flags as query params', async () => {
+  it('builds /recall URL with the requested dimension flags and Auth0 Bearer header', async () => {
     await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
+      ...baseOpts,
       preferences: true,
-      facts: true,
+      about: true,
       project: 'mnemo',
+      task: 'coding',
+      date: '2026-05-14',
     });
 
     const [url, options] = mockFetch.mock.calls[0];
+    expect(url).toContain('/recall?');
     expect(url).toContain('preferences=true');
-    expect(url).toContain('facts=true');
-    expect(url).toContain('project=mnemo');
-    expect(url).not.toContain('episodes');
-    expect(options.headers['x-api-key']).toBe('test-key');
-  });
-
-  it('omits false dimension flags', async () => {
-    await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
-      preferences: true,
-    });
-
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('preferences=true');
-    expect(url).not.toContain('facts');
-    expect(url).not.toContain('episodes');
-    expect(url).not.toContain('project');
-  });
-
-  it('passes about=true when about flag is set', async () => {
-    await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
-      about: true,
-    });
-
-    const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('about=true');
-  });
-
-  it('passes q as a URL query param when provided', async () => {
-    await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
-      preferences: true,
-      q: 'Rust async',
-    });
-
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('q=Rust');
-  });
-
-  it('passes task param to /recall', async () => {
-    await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
-      task: 'coding',
-    });
-
-    const [url] = mockFetch.mock.calls[0];
+    expect(url).toContain('project=mnemo');
     expect(url).toContain('task=coding');
+    expect(url).toContain('date=2026-05-14');
+    // facts was dropped in v2 and should never appear.
+    expect(url).not.toContain('facts');
+    expect(options.headers['Authorization']).toBe('Bearer mock-jwt');
   });
 
-  it('passes date param to /recall', async () => {
+  it('passes q + tag filters + similarity threshold through as snake_case query params', async () => {
     await executeRecall({
-      apiUrl: 'https://api.example.com/v1',
-      apiKey: 'test-key',
-      workstation: 'laptop',
-      date: '2026-04-13',
+      ...baseOpts,
+      preferences: true,
+      q: 'durable preferences',
+      tags: 'language,tool',
+      tagMode: 'all',
+      minSimilarity: 0.7,
+      limit: 5,
     });
 
     const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('date=2026-04-13');
+    expect(url).toContain('q=durable+preferences');
+    expect(url).toContain('tags=language%2Ctool');
+    expect(url).toContain('tag_mode=all');
+    expect(url).toContain('min_similarity=0.7');
+    expect(url).toContain('limit=5');
   });
 
   it('throws on non-ok response', async () => {
     mockFetch.mockResolvedValue({
       ok: false,
-      status: 503,
-      text: () => Promise.resolve('Service Unavailable'),
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
     });
 
     await expect(
-      executeRecall({
-        apiUrl: 'https://api.example.com/v1',
-        apiKey: 'key',
-        workstation: 'laptop',
-      })
-    ).rejects.toThrow('503');
+      executeRecall({ ...baseOpts, preferences: true })
+    ).rejects.toThrow('401');
+  });
+
+  it("throws 'Not logged in' when getAccessToken returns null", async () => {
+    vi.mocked(getAccessToken).mockResolvedValueOnce(null);
+
+    await expect(
+      executeRecall({ ...baseOpts, preferences: true })
+    ).rejects.toThrow(/Not logged in/);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('returns the server response verbatim', async () => {
+    const got = await executeRecall({ ...baseOpts, preferences: true });
+    expect(got).toEqual(sampleResponse);
   });
 });
 
-describe('formatRecallOutput', () => {
-  it('formats response for visible mode', () => {
-    const output = formatRecallOutput(sampleResponse, true);
-    expect(output).toContain('Prefers TypeScript');
-    expect(output).toContain('Senior engineer');
-    expect(output).toContain('mnemo');
-    expect(output).toContain('Chose CDK over SAM');
+describe('formatRecallForHook', () => {
+  it('renders each non-empty dimension as a markdown section with bullet list', () => {
+    const md = formatRecallForHook(sampleResponse);
+    expect(md).toContain('## preferences');
+    expect(md).toContain('- Prefers TypeScript and functional style');
+    expect(md).toContain('## project');
+    expect(md).toContain('- Chose Postgres + pgvector over a vector DB');
   });
 
-  it('formats response for silent mode as JSON with additionalContext', () => {
-    const output = formatRecallOutput(sampleResponse, false);
-    const parsed = JSON.parse(output);
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
-    expect(parsed.hookSpecificOutput.additionalContext).toBeDefined();
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('[mnemo context]');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('Prefers TypeScript');
-  });
-
-  it('only renders sections present in response', () => {
-    const output = formatRecallOutput({ facts: [{ id: 'f1', content: 'a fact', score: 0.9, createdAt: '' }] }, true);
-    expect(output).toContain('## Facts');
-    expect(output).not.toContain('## Preferences');
-    expect(output).not.toContain('## Episodes');
-  });
-
-  it('returns empty string when response has no data', () => {
-    const output = formatRecallOutput({}, true);
-    expect(output).toBe('');
-  });
-
-  it('renders the about section as prose (not a bullet list)', () => {
-    const response = {
-      about: [
-        { id: 'a1', content: 'Tiago is a principal engineer at Amazon, currently working on memory systems.', score: 0.99, createdAt: '' },
-      ],
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('## About');
-    expect(output).toContain('Tiago is a principal engineer');
-    // Should NOT prefix with bullet markers
-    expect(output).not.toContain('- Tiago is a principal engineer');
-  });
-
-  it('extracts plain text from JSON preference content', () => {
-    const response = {
-      preferences: [
+  it('skips empty dimensions', () => {
+    const md = formatRecallForHook({
+      dimensions: [
+        { dimension: 'preferences', namespace: '/preferences/x/', items: [] },
         {
-          id: 'r1',
-          content: '{"context":"User said they like TS","preference":"Always use TypeScript","categories":["lang"]}',
-          score: 0.95,
-          createdAt: '',
+          dimension: 'about',
+          namespace: '/about/x/',
+          items: [
+            {
+              id: 'a1',
+              content: 'Tiago — backend engineer',
+              tags: [],
+              created_at: '',
+              updated_at: '',
+              reinforced_count: 1,
+            },
+          ],
         },
       ],
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('- Always use TypeScript');
-    expect(output).not.toContain('"context"');
+    });
+    expect(md).not.toContain('## preferences');
+    expect(md).toContain('## about');
+    expect(md).toContain('- Tiago — backend engineer');
   });
 
-  it('formats episodic content with title/use_cases/hints as markdown', () => {
-    const response = {
-      episodes: [
-        {
-          id: 'e1',
-          content: JSON.stringify({
-            title: 'Debugging IAM Propagation',
-            use_cases: 'Applies when deploying AgentCore resources',
-            hints: 'Check both identity and resource policies',
-            confidence: '0.9',
-          }),
-          score: 0.85,
-          createdAt: '',
-        },
-      ],
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('### Debugging IAM Propagation');
-    expect(output).toContain('**Use cases:** Applies when deploying');
-    expect(output).toContain('**Hints:** Check both identity');
-    expect(output).toContain('**Confidence:** 0.9');
-    expect(output).not.toContain('"title"');
-  });
-
-  it('formats episodic content with situation/turns as markdown', () => {
-    const response = {
-      episodes: [
-        {
-          id: 'e2',
-          content: JSON.stringify({
-            situation: 'User explained CfnMemory migration',
-            intent: 'Validate architectural decision',
-            assessment: 'Yes',
-            justification: 'Assistant confirmed understanding',
-            reflection: 'Direct acknowledgment was sufficient',
-            turns: [
-              {
-                situation: 'Explaining CfnMemory choice',
-                intent: 'Seek validation',
-                action: 'Provided affirmative response',
-                thought: 'Showed understanding of rationale',
-                assessmentAssistant: 'Validated successfully',
-                assessmentUser: 'No follow-up needed',
-              },
-            ],
-          }),
-          score: 0.8,
-          createdAt: '',
-        },
-      ],
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('**Situation:** User explained CfnMemory migration');
-    expect(output).toContain('**Intent:** Validate architectural decision');
-    expect(output).toContain('**Assessment:** Yes');
-    expect(output).toContain('**Reflection:** Direct acknowledgment was sufficient');
-    expect(output).toContain('**Turns:**');
-    expect(output).toContain('**Action:** Provided affirmative response');
-    expect(output).not.toContain('"situation"');
-  });
-
-  it('passes through non-JSON episode content as-is', () => {
-    const response = {
-      episodes: [
-        {
-          id: 'e3',
-          content: 'Plain text episode about debugging session',
-          score: 0.7,
-          createdAt: '',
-        },
-      ],
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('Plain text episode about debugging session');
-  });
-
-  it('formats tasks and daily sections', () => {
-    const response = {
-      tasks: {
-        name: 'coding',
-        memories: [
-          { id: 't1', content: 'Prefers TDD workflow', score: 0.9, createdAt: '' },
-        ],
-      },
-      daily: {
-        date: '2026-04-13',
-        memories: [
-          { id: 'd1', content: 'Worked on mnemo context extractor', score: 0.85, createdAt: '' },
-        ],
-      },
-    };
-    const output = formatRecallOutput(response, true);
-    expect(output).toContain('## Task: coding');
-    expect(output).toContain('Prefers TDD workflow');
-    expect(output).toContain('## Daily: 2026-04-13');
-    expect(output).toContain('Worked on mnemo context extractor');
+  it('returns an empty string when nothing was recalled', () => {
+    expect(formatRecallForHook({ dimensions: [] })).toBe('');
   });
 });

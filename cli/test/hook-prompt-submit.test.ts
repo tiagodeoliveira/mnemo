@@ -9,10 +9,16 @@ global.fetch = mockFetch;
 vi.mock('../src/config', () => ({
   loadConfig: () => ({
     apiUrl: 'https://api.test.com/v1',
-    apiKey: 'test-key',
+    auth0Domain: 'tenant.us.auth0.com',
+    auth0Audience: 'https://api.test.com',
+    auth0ClientId: 'client-123',
     workstation: 'test-ws',
     defaults: { visible: true },
   }),
+}));
+
+vi.mock('../src/auth', () => ({
+  getAccessToken: vi.fn().mockResolvedValue('mock-jwt'),
 }));
 
 vi.mock('../src/detect-project', () => ({
@@ -58,11 +64,11 @@ describe('hook-prompt-submit', () => {
 
     expect(mockFetch).toHaveBeenCalledOnce();
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.sessionId).toBe('test-session-1');
+    expect(body.session_id).toBe('test-session-1');
     expect(body.turns).toContainEqual({ role: 'user', content: 'hello' });
     expect(body.turns).toContainEqual({ role: 'assistant', content: 'hi there' });
-    expect(body.context.source).toBe('claude-code');
-    expect(body.context.project).toBe('test-project');
+    expect(body.source).toBe('claude-code');
+    expect(body.project).toBe('test-project');
   });
 
   it('skips push when session_id missing', async () => {
@@ -232,7 +238,7 @@ describe('hook-prompt-submit', () => {
 
     expect(mockFetch).toHaveBeenCalledOnce();
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(body.context.source).toBe('gemini-cli');
+    expect(body.source).toBe('gemini-cli');
     expect(body.turns).toEqual([
       { role: 'user', content: 'write a plan' },
       { role: 'assistant', content: 'here is the plan' },

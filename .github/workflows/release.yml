@@ -1,0 +1,57 @@
+name: release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+jobs:
+  publish-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/mnemo-server
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+            type=ref,event=tag
+      - uses: docker/build-push-action@v5
+        with:
+          context: server
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  publish-cli:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cli/package-lock.json
+      - name: build + pack
+        working-directory: cli
+        run: |
+          npm ci
+          npm run build
+          npm pack
+      - name: attach tarball to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: cli/mnemo-cli-*.tgz

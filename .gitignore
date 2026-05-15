@@ -8,3 +8,7 @@ cdk.out/
 !vitest.config.ts
 !extension/**/*.js
 .env
+
+# Local experiment artifacts
+auris-meetings-bundle.tar.gz
+v2-*.md

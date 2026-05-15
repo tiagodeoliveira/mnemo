@@ -1,68 +1,77 @@
+import { loadConfig } from '../config';
+import { getAccessToken } from '../auth';
+import { detectProject } from '../detect-project';
+import { localDate } from '../date';
+
 export interface RecallOptions {
   apiUrl: string;
-  apiKey: string;
+  auth0Domain: string;
+  auth0ClientId: string;
   workstation: string;
   preferences?: boolean;
-  facts?: boolean;
   episodes?: boolean;
   about?: boolean;
   project?: string;
   task?: string;
   date?: string;
   meeting?: string;
-  /** Optional query override used as searchQuery against every requested dimension. */
+  /** Optional semantic ranking query within the selected dimensions. */
   q?: string;
+  tags?: string;        // csv
+  tagMode?: string;     // 'any' | 'all'
+  since?: string;
+  until?: string;
+  limit?: number;
+  minSimilarity?: number;
+  format?: 'text' | 'json';
 }
 
-interface MemoryRecord {
+export interface RecallItem {
   id: string;
   content: string;
-  score: number;
-  createdAt: string;
+  tags: string[];
+  created_at: string;
+  updated_at: string;
+  reinforced_count: number;
+  similarity?: number;
 }
 
-interface RecallResponse {
-  preferences?: MemoryRecord[];
-  facts?: MemoryRecord[];
-  episodes?: MemoryRecord[];
-  about?: MemoryRecord[];
-  project?: {
-    name: string;
-    memories: MemoryRecord[];
-  };
-  tasks?: {
-    name: string;
-    memories: MemoryRecord[];
-  };
-  daily?: {
-    date: string;
-    memories: MemoryRecord[];
-  };
-  meeting?: {
-    id: string;
-    memories: MemoryRecord[];
-  };
+export interface RecallDimension {
+  dimension: string;
+  namespace: string;
+  items: RecallItem[];
+}
+
+export interface RecallResponse {
+  dimensions: RecallDimension[];
 }
 
 export async function executeRecall(options: RecallOptions): Promise<RecallResponse> {
+  const token = await getAccessToken({ domain: options.auth0Domain, clientId: options.auth0ClientId });
+  if (!token) {
+    throw new Error("Not logged in. Run 'mnemo login' first.");
+  }
+
   const params = new URLSearchParams();
   if (options.preferences) params.set('preferences', 'true');
-  if (options.facts) params.set('facts', 'true');
   if (options.episodes) params.set('episodes', 'true');
   if (options.about) params.set('about', 'true');
   if (options.meeting) params.set('meeting', options.meeting);
-  if (options.q) params.set('q', options.q);
   if (options.project) params.set('project', options.project);
   if (options.task) params.set('task', options.task);
   if (options.date) params.set('date', options.date);
-  params.set('workstation', options.workstation);
+  if (options.q) params.set('q', options.q);
+  if (options.tags) params.set('tags', options.tags);
+  if (options.tagMode) params.set('tag_mode', options.tagMode);
+  if (options.since) params.set('since', options.since);
+  if (options.until) params.set('until', options.until);
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.minSimilarity !== undefined) params.set('min_similarity', String(options.minSimilarity));
 
   const url = `${options.apiUrl}/recall?${params.toString()}`;
 
   const response = await fetch(url, {
-    headers: {
-      'x-api-key': options.apiKey,
-    },
+    headers: { 'Authorization': `Bearer ${token}` },
   });
 
   if (!response.ok) {
@@ -73,127 +82,115 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   return response.json() as Promise<RecallResponse>;
 }
 
-function extractPreference(content: string): string {
-  try {
-    const parsed = JSON.parse(content);
-    if (typeof parsed === 'object' && parsed !== null) {
-      return parsed.preference || parsed.text || parsed.summary || content;
+function formatDate(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function renderTextOutput(data: RecallResponse): string {
+  const lines: string[] = [];
+  for (const dim of data.dimensions) {
+    if (!dim.items || dim.items.length === 0) continue;
+    lines.push(`${dim.dimension.toUpperCase()} (${dim.items.length} item${dim.items.length === 1 ? '' : 's'})`);
+    for (const item of dim.items) {
+      lines.push(`  • ${item.content}`);
+      const meta: string[] = [];
+      if (item.tags && item.tags.length > 0) meta.push(`tags: ${item.tags.join(', ')}`);
+      if (item.reinforced_count > 1) meta.push(`reinforced ${item.reinforced_count}×`);
+      meta.push(`last ${formatDate(item.updated_at)}`);
+      if (item.similarity !== undefined) meta.push(`similarity: ${item.similarity.toFixed(2)}`);
+      lines.push(`      ${meta.join(' · ')}`);
     }
-  } catch {
-    // not JSON, use as-is
   }
-  return content;
+  return lines.join('\n');
 }
 
-function formatEpisode(content: string): string {
-  try {
-    const ep = JSON.parse(content);
-    if (typeof ep !== 'object' || ep === null) return content;
-
-    const lines: string[] = [];
-
-    if (ep.title) {
-      lines.push(`### ${ep.title}`);
-    } else if (ep.situation) {
-      lines.push(`### ${ep.situation.length > 100 ? ep.situation.slice(0, 100) + '...' : ep.situation}`);
-    }
-
-    if (ep.situation) lines.push(`**Situation:** ${ep.situation}`);
-    if (ep.intent) lines.push(`**Intent:** ${ep.intent}`);
-    if (ep.use_cases) lines.push(`**Use cases:** ${ep.use_cases}`);
-    if (ep.hints) lines.push(`**Hints:** ${ep.hints}`);
-    if (ep.assessment) lines.push(`**Assessment:** ${ep.assessment}`);
-    if (ep.justification) lines.push(`**Justification:** ${ep.justification}`);
-    if (ep.reflection) lines.push(`**Reflection:** ${ep.reflection}`);
-    if (ep.confidence) lines.push(`**Confidence:** ${ep.confidence}`);
-
-    if (Array.isArray(ep.turns) && ep.turns.length > 0) {
-      lines.push('', '**Turns:**');
-      for (const turn of ep.turns) {
-        if (turn.situation) lines.push(`- **Situation:** ${turn.situation}`);
-        if (turn.intent) lines.push(`  **Intent:** ${turn.intent}`);
-        if (turn.action) lines.push(`  **Action:** ${turn.action}`);
-        if (turn.thought) lines.push(`  **Thought:** ${turn.thought}`);
-        if (turn.assessmentAssistant) lines.push(`  **Assessment (assistant):** ${turn.assessmentAssistant}`);
-        if (turn.assessmentUser) lines.push(`  **Assessment (user):** ${turn.assessmentUser}`);
-      }
-    }
-
-    return lines.join('\n');
-  } catch {
-    return content;
-  }
-}
-
-function formatBulletSection(title: string, records: MemoryRecord[], extractor: (c: string) => string): string {
-  if (records.length === 0) return '';
-  const items = records.map((r) => `- ${extractor(r.content)}`).join('\n');
-  return `## ${title}\n${items}\n`;
-}
-
-function formatEpisodeSection(records: MemoryRecord[]): string {
-  if (records.length === 0) return '';
-  const items = records.map((r) => formatEpisode(r.content)).join('\n\n');
-  return `## Episodes\n${items}\n`;
-}
-
-export interface FormatOptions {
-  visible: boolean;
-}
-
-export function formatRecallOutput(response: RecallResponse, visibleOrOpts: boolean | FormatOptions): string {
-  const opts: FormatOptions = typeof visibleOrOpts === 'boolean'
-    ? { visible: visibleOrOpts }
-    : visibleOrOpts;
-  const visible = opts.visible;
-
+/**
+ * Format recalled memories as a markdown context block suitable for injection
+ * into a Claude Code hook (additionalContext). Used by the session-start hook.
+ */
+export function formatRecallForHook(data: RecallResponse): string {
   const sections: string[] = [];
-
-  if (response.about && response.about.length > 0) {
-    const bio = response.about.map((r) => r.content).join('\n\n');
-    sections.push(`## About\n${bio}\n`);
+  for (const dim of data.dimensions) {
+    if (!dim.items || dim.items.length === 0) continue;
+    const bullets = dim.items.map((it) => `- ${it.content}`).join('\n');
+    sections.push(`## ${dim.dimension}\n${bullets}`);
   }
-  if (response.preferences) {
-    sections.push(formatBulletSection('Preferences', response.preferences, extractPreference));
-  }
-  if (response.facts) {
-    sections.push(formatBulletSection('Facts', response.facts, (c) => c));
-  }
-  if (response.episodes) {
-    sections.push(formatEpisodeSection(response.episodes));
+  if (sections.length === 0) return '';
+  return sections.join('\n');
+}
+
+export async function recallCmd(opts: {
+  preferences?: boolean;
+  episodes?: boolean;
+  about?: boolean;
+  project?: string | true;
+  task?: string;
+  date?: string;
+  daily?: boolean;
+  meeting?: string;
+  all?: boolean;
+  q?: string;
+  tags?: string;
+  tagMode?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  minSimilarity?: number;
+  format?: string;
+}): Promise<void> {
+  const config = loadConfig();
+
+  const hasProject = opts.project !== undefined;
+  const hasTask = opts.task !== undefined;
+  const hasDate = opts.date !== undefined || opts.daily;
+  const hasMeeting = opts.meeting !== undefined;
+  const hasDimension = opts.preferences || opts.episodes || opts.about || hasProject || hasTask || hasDate || hasMeeting || opts.all;
+
+  if (!hasDimension) {
+    if (opts.q) {
+      process.stderr.write(
+        '--q ranks records within a dimension; it is not a standalone search. ' +
+        'Combine it with at least one dimension flag (e.g. `mnemo recall --preferences --q "Rust async"`).\n'
+      );
+      process.exit(2);
+    }
+    process.stderr.write('Specify at least one dimension flag. Use --all for everything.\n');
+    process.exit(2);
   }
 
-  if (response.project) {
-    sections.push(formatBulletSection(`Project: ${response.project.name}`, response.project.memories, (c) => c));
-  }
+  const project = hasProject
+    ? (typeof opts.project === 'string' ? opts.project : detectProject())
+    : opts.all ? detectProject() : undefined;
 
-  if (response.tasks) {
-    sections.push(formatBulletSection(`Task: ${response.tasks.name}`, response.tasks.memories, (c) => c));
-  }
+  const date = opts.date || (opts.daily || opts.all ? localDate() : undefined);
 
-  if (response.daily) {
-    sections.push(formatBulletSection(`Daily: ${response.daily.date}`, response.daily.memories, (c) => c));
-  }
-
-  if (response.meeting && response.meeting.memories.length > 0) {
-    // Each record is a category body (summary / decisions / actions / etc.)
-    // pre-shaped by the extractor. Render them joined under one heading.
-    const body = response.meeting.memories.map((r) => r.content).join('\n\n');
-    sections.push(`## Meeting: ${response.meeting.id}\n${body}\n`);
-  }
-
-  const content = sections.filter(Boolean).join('\n');
-
-  if (!content) return '';
-
-  if (visible) {
-    return `# mnemo — recalled memories\n\n${content}`;
-  }
-
-  return JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: 'SessionStart',
-      additionalContext: `[mnemo context]\n${content}`,
-    },
+  const response = await executeRecall({
+    apiUrl: config.apiUrl,
+    auth0Domain: config.auth0Domain,
+    auth0ClientId: config.auth0ClientId,
+    workstation: config.workstation,
+    preferences: opts.all || opts.preferences,
+    episodes: opts.all || opts.episodes,
+    about: opts.all || opts.about,
+    project,
+    task: opts.task || (opts.all ? 'coding' : undefined),
+    date,
+    meeting: opts.meeting,
+    q: opts.q,
+    tags: opts.tags,
+    tagMode: opts.tagMode,
+    since: opts.since,
+    until: opts.until,
+    limit: opts.limit,
+    minSimilarity: opts.minSimilarity,
+    format: opts.format === 'json' ? 'json' : 'text',
   });
+
+  if (opts.format === 'json') {
+    console.log(JSON.stringify(response, null, 2));
+    return;
+  }
+
+  const output = renderTextOutput(response);
+  if (output) process.stdout.write(output + '\n');
 }

@@ -13,8 +13,7 @@
     "ai",
     "memory",
     "cli",
-    "claude",
-    "bedrock"
+    "claude"
   ],
   "engines": {
     "node": ">=22"
@@ -24,6 +23,8 @@
   },
   "scripts": {
     "build": "tsc",
+    "lint": "eslint 'src/**/*.ts' --max-warnings 0",
+    "lint:fix": "eslint 'src/**/*.ts' --fix --max-warnings 0",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -35,6 +36,7 @@
     "@types/node": "^22.0.0",
     "eslint": "^9.39.4",
     "typescript": "~5.7.0",
+    "typescript-eslint": "^8.58.2",
     "vitest": "^3.0.0"
   }
 }

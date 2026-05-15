@@ -103,8 +103,8 @@ function ensureMnemoConfig(mnemoConfigPath: string): boolean {
     mnemoConfigPath,
     JSON.stringify(
       {
-        apiUrl: 'https://YOUR_API_ID.execute-api.YOUR_REGION.amazonaws.com/v1',
-        apiKey: 'YOUR_API_KEY',
+        apiUrl: 'https://mnemo.tiago.tools',
+        // auth0 fields omitted — defaults baked in. Override here if you run your own Auth0 tenant.
         workstation: os.hostname(),
         defaults: { visible: true },
       },

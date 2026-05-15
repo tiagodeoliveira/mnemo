@@ -44,8 +44,9 @@ button that round-trips a synthetic event through `/events`.
 1. `chrome://extensions` → enable Developer mode → Load unpacked → pick this
    `extension/` directory.
 2. Open the extension's Options page and fill in:
-   - **API base URL** — e.g. `https://abc123.execute-api.us-east-1.amazonaws.com/v1`
-   - **API key** — the same `x-api-key` value the CLI uses
+   - **API base URL** — e.g. `https://mnemo.example.com/v1` (your deployed
+     Caddy/Cloudflare front-door) or `http://localhost:8080/v1` for local dev.
+   - **API key** — the JWT issued by Auris device-flow (same value the CLI uses)
    - **Workstation** — defaults to `chrome-extension`
 3. Click **Test push** to verify the API key works.
 4. Open a chat on claude.ai or chatgpt.com and send a message. The popup should

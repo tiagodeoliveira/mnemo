@@ -24,11 +24,101 @@ const RECENT_CAPTURES_MAX = 20;
 const STALE_AFTER_MS = 10 * 60 * 1000; // 10 min on-site without capture → yellow
 
 const DEFAULTS = {
-  apiUrl: '',
-  apiKey: '',
+  apiUrl: 'https://mnemo.tiago.tools',
+  auth0Domain: 'dev-jrva0wzk3qkdxcar.us.auth0.com',
+  auth0Audience: 'https://mnemo.tiago.tools',
+  auth0ClientId: 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS',
   workstation: 'chrome-extension',
   enabled: true,
 };
+
+// ---- Auth0 device flow + token storage ------------------------------------
+// Tokens live in chrome.storage.local under 'mnemo_creds' as
+// { access_token, refresh_token, expires_at }.
+
+const CRED_KEY = 'mnemo_creds';
+
+async function startDeviceLogin(cfg) {
+  const dcRes = await fetch(`https://${cfg.auth0Domain}/oauth/device/code`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: cfg.auth0ClientId,
+      scope: 'openid profile email offline_access',
+      audience: cfg.auth0Audience,
+    }),
+  });
+  if (!dcRes.ok) throw new Error(`device/code ${dcRes.status}`);
+  const dc = await dcRes.json();
+  // Open the verification page for the user.
+  chrome.tabs.create({ url: dc.verification_uri_complete });
+  return dc; // caller will poll
+}
+
+async function pollDeviceToken(cfg, deviceCode) {
+  const res = await fetch(`https://${cfg.auth0Domain}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+      device_code: deviceCode,
+      client_id: cfg.auth0ClientId,
+    }),
+  });
+  const t = await res.json();
+  return t; // {access_token,...} | {error:'authorization_pending'|...}
+}
+
+async function saveCredentials(t) {
+  const cred = {
+    access_token: t.access_token,
+    refresh_token: t.refresh_token,
+    expires_at: Math.floor(Date.now() / 1000) + (t.expires_in || 0),
+  };
+  await chrome.storage.local.set({ [CRED_KEY]: cred });
+}
+
+async function loadCredentials() {
+  const got = await chrome.storage.local.get(CRED_KEY);
+  return got[CRED_KEY] || null;
+}
+
+async function clearCredentials() {
+  await chrome.storage.local.remove(CRED_KEY);
+}
+
+async function refreshAccessToken(cfg) {
+  const cur = await loadCredentials();
+  if (!cur || !cur.refresh_token) return null;
+  const res = await fetch(`https://${cfg.auth0Domain}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      client_id: cfg.auth0ClientId,
+      refresh_token: cur.refresh_token,
+    }),
+  });
+  if (!res.ok) return null;
+  const t = await res.json();
+  if (!t.access_token) return null;
+  const fresh = {
+    access_token: t.access_token,
+    refresh_token: t.refresh_token || cur.refresh_token,
+    expires_at: Math.floor(Date.now() / 1000) + (t.expires_in || 0),
+  };
+  await chrome.storage.local.set({ [CRED_KEY]: fresh });
+  return fresh.access_token;
+}
+
+async function getAccessToken(cfg) {
+  const cur = await loadCredentials();
+  if (!cur) return null;
+  if (cur.expires_at - 60 > Math.floor(Date.now() / 1000)) {
+    return cur.access_token;
+  }
+  return await refreshAccessToken(cfg);
+}
 
 // ---- Storage helpers ------------------------------------------------------
 
@@ -42,8 +132,14 @@ async function loadConfig() {
 async function pushToMnemo(detail) {
   const cfg = await loadConfig();
   if (!cfg.enabled) return { skipped: 'disabled' };
-  if (!cfg.apiUrl || !cfg.apiKey) {
+  if (!cfg.apiUrl || !cfg.auth0Domain || !cfg.auth0ClientId) {
     return { skipped: 'unconfigured' };
+  }
+
+  const token = await getAccessToken(cfg);
+  if (!token) {
+    console.warn('[mnemo] no access token — skipping push (sign in via Options)');
+    return { skipped: 'unauthenticated' };
   }
 
   const turns = [];
@@ -88,7 +184,7 @@ async function pushToMnemo(detail) {
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': cfg.apiKey },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
@@ -154,8 +250,8 @@ async function restoreHealth() {
 async function computeStatus() {
   const cfg = await loadConfig();
   const now = Date.now();
-  if (!cfg.apiUrl || !cfg.apiKey) {
-    return { color: '#777', label: 'cfg', detail: 'API URL or key not set' };
+  if (!cfg.apiUrl || !cfg.auth0Domain || !cfg.auth0ClientId) {
+    return { color: '#777', label: 'cfg', detail: 'API URL or Auth0 config not set' };
   }
   if (!cfg.enabled) {
     return { color: '#777', label: 'off', detail: 'Capture disabled' };
@@ -213,6 +309,40 @@ async function refreshUi() {
       (HEALTH.captures ? `\n${HEALTH.captures} captures, ${HEALTH.pushFailures} push failures` : ''),
   });
 }
+
+// ---- Login poll alarm handler (registered once at top level) --------------
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'mnemo-refresh') {
+    void refreshUi();
+    return;
+  }
+  if (alarm.name === 'mnemo-login-poll') {
+    // Delegated to the stored poll state; nothing to do here unless
+    // options.js re-sends a startLogin. The alarm fires the tick closure
+    // stored in the outer scope by handleMessage. Because service workers
+    // can restart between alarms, we re-read config and device_code from
+    // storage if available.
+    const got = await chrome.storage.local.get('mnemo_login_pending');
+    const pending = got.mnemo_login_pending;
+    if (!pending) return;
+    if (Date.now() > pending.deadline) {
+      await chrome.storage.local.remove('mnemo_login_pending');
+      return;
+    }
+    const cfg = await loadConfig();
+    const t = await pollDeviceToken(cfg, pending.device_code);
+    if (t.access_token) {
+      await saveCredentials(t);
+      await chrome.storage.local.remove('mnemo_login_pending');
+      return;
+    }
+    if (!t.error || t.error === 'authorization_pending' || t.error === 'slow_down') {
+      const interval = t.error === 'slow_down' ? pending.interval + 5 : pending.interval;
+      chrome.alarms.create('mnemo-login-poll', { when: Date.now() + interval * 1000 });
+    }
+  }
+});
 
 // ---- Event handling -------------------------------------------------------
 
@@ -304,11 +434,12 @@ async function handleMessage(msg, sender) {
     case 'get-status': {
       const status = await computeStatus();
       const cfg = await loadConfig();
+      const cred = await loadCredentials();
       return {
         ok: true,
         status,
         health: HEALTH,
-        config: { ...cfg, apiKey: cfg.apiKey ? '••••' : '' },
+        config: { apiUrl: cfg.apiUrl, workstation: cfg.workstation, signedIn: !!cred },
       };
     }
 
@@ -328,6 +459,38 @@ async function handleMessage(msg, sender) {
         return { ok: false, error: String(e && e.message || e) };
       }
     }
+
+    case 'mnemo:startLogin': {
+      const cfg = await loadConfig();
+      try {
+        const dc = await startDeviceLogin(cfg);
+        const deadline = Date.now() + dc.expires_in * 1000;
+        const interval = Math.max(5, dc.interval || 5);
+        // Persist pending state so the alarm handler can resume after SW restart.
+        await chrome.storage.local.set({
+          mnemo_login_pending: {
+            device_code: dc.device_code,
+            deadline,
+            interval,
+          },
+        });
+        // Schedule first poll.
+        chrome.alarms.create('mnemo-login-poll', { when: Date.now() + interval * 1000 });
+        return { ok: true, verification_uri_complete: dc.verification_uri_complete, user_code: dc.user_code };
+      } catch (e) {
+        return { ok: false, error: String(e && e.message || e) };
+      }
+    }
+
+    case 'mnemo:signOut': {
+      await clearCredentials();
+      return { ok: true };
+    }
+
+    case 'mnemo:authStatus': {
+      const cred = await loadCredentials();
+      return { ok: true, signedIn: !!cred, expires_at: cred ? cred.expires_at : null };
+    }
   }
 
   await refreshUi();
@@ -335,9 +498,6 @@ async function handleMessage(msg, sender) {
 
 // Periodic refresh so "stale" transitions show up without an event.
 chrome.alarms.create('mnemo-refresh', { periodInMinutes: 1 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'mnemo-refresh') void refreshUi();
-});
 
 // Initial paint.
 void (async () => {

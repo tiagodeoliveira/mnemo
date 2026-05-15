@@ -1,0 +1,29 @@
+name: test
+on:
+  pull_request: {}
+  push:
+    branches: [main, "feat/**"]
+jobs:
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          cache-dependency-path: server/go.sum
+      - name: go test
+        working-directory: server
+        run: go test ./... -count=1 -timeout 120s
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v5
+        with:
+          context: server
+          push: false
+          load: true
+          tags: mnemo-server:ci
