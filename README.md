@@ -103,7 +103,6 @@ SKIP LOCKED contention.
 server/      Go server (owns go.mod), Dockerfile, internal/ packages
 cli/         TypeScript CLI (owns its tooling), Auth0 device-flow login
 extension/   Chrome MV3 extension (plain JS, no build step)
-docs/        Operational docs (Cloudflare deploy guide, design specs)
 scripts/     Smoke test
 ```
 
@@ -146,23 +145,14 @@ asserts that memories landed.
 
 ## Production deploy
 
-Single-VM topology: Postgres + mnemo-server + Caddy (TLS terminator), all
-managed by `docker-compose.deploy.yml`. The server image is published to
-GHCR by the `release.yml` workflow on every push to `main`.
+The deployment stack — Postgres + mnemo-server + auris-server + nginx
+(TLS terminator) + scheduled backups, all behind Cloudflare — lives in a
+separate repo: [`kleos`](https://github.com/tiagodeoliveira/kleos). This
+repo owns only the mnemo source and image; kleos owns the topology.
 
-```bash
-cp .env.deploy.example .env.deploy
-$EDITOR .env.deploy        # POSTGRES_PASSWORD, AUTH0_*, ANTHROPIC_API_KEY, …
-cp Caddyfile.example Caddyfile
-
-docker compose -f docker-compose.deploy.yml pull mnemo
-docker compose -f docker-compose.deploy.yml up -d
-```
-
-Caddy expects an origin cert at `./certs/cert.pem` + `./certs/key.pem`. If
-you're using Cloudflare in front of the VM, generate an Origin Certificate
-in the Cloudflare dashboard and drop it there. `docs/deploy-cloudflare.md`
-walks through the full Cloudflare + Caddy + Auth0 setup end-to-end.
+The server image is published to GHCR by the `release.yml` workflow on
+every push to `main`. Kleos pulls and runs pinned tags. No deploy
+artifacts (compose, env templates, cert handling) live here.
 
 ### Required environment
 
