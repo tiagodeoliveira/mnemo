@@ -12,3 +12,5 @@ cdk.out/
 # Local experiment artifacts
 auris-meetings-bundle.tar.gz
 v2-*.md
+
+*.tgz
