@@ -12,6 +12,54 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
+// retryDBOp runs op up to 3 times with exponential backoff (500ms/1s/2s).
+// Respects ctx cancellation.
+func retryDBOp(ctx context.Context, op func() error) error {
+	backoffs := []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+	var lastErr error
+	for i, b := range backoffs {
+		if err := op(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		// Don't sleep after the last attempt.
+		if i == len(backoffs)-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(b):
+		}
+	}
+	return lastErr
+}
+
+// completeWithRetry tries CompleteJob up to 3 times with exponential backoff.
+// Logs an ERROR on persistent failure — the lock stays held until next boot's
+// ReclaimStaleJobs releases it.
+func (p *Pool) completeWithRetry(ctx context.Context, jobID int64) {
+	if err := retryDBOp(ctx, func() error {
+		return p.store.CompleteJob(ctx, jobID)
+	}); err != nil {
+		p.logger.Error("CompleteJob persistently failed — lock will be reclaimed on next boot",
+			"job_id", jobID, "err", err)
+	}
+}
+
+// failWithRetry tries FailJob up to 3 times with exponential backoff.
+// Logs an ERROR on persistent failure — the lock stays held until next boot's
+// ReclaimStaleJobs releases it.
+func (p *Pool) failWithRetry(ctx context.Context, jobID int64, attempts int, errMsg string, runAfterSec int, maxAttempts int) {
+	if err := retryDBOp(ctx, func() error {
+		return p.store.FailJob(ctx, jobID, attempts, errMsg, runAfterSec, maxAttempts)
+	}); err != nil {
+		p.logger.Error("FailJob persistently failed — lock will be reclaimed on next boot",
+			"job_id", jobID, "err", err)
+	}
+}
+
 // Handler processes one job's payload. Idempotent on retry.
 type Handler func(ctx context.Context, payload json.RawMessage) error
 
@@ -71,15 +119,15 @@ func (p *Pool) loop(ctx context.Context, id string) {
 			p.logger.Error("no handler for kind",
 				"worker", id, "kind", string(j.Kind), "kind_len", len(j.Kind),
 				"known", known, "known_count", len(p.handlers))
-			_ = p.store.FailJob(ctx, j.JobID, j.Attempts, "no handler for kind: "+string(j.Kind), 0, 1)
+			p.failWithRetry(ctx, j.JobID, j.Attempts, "no handler for kind: "+string(j.Kind), 0, 1)
 			continue
 		}
 		if err := h(ctx, j.Payload); err != nil {
 			p.logger.Warn("job failed", "worker", id, "kind", j.Kind, "job_id", j.JobID, "attempts", j.Attempts, "err", err)
-			_ = p.store.FailJob(ctx, j.JobID, j.Attempts, err.Error(), BackoffSeconds(j.Attempts), MaxAttempts)
+			p.failWithRetry(ctx, j.JobID, j.Attempts, err.Error(), BackoffSeconds(j.Attempts), MaxAttempts)
 			continue
 		}
-		_ = p.store.CompleteJob(ctx, j.JobID)
+		p.completeWithRetry(ctx, j.JobID)
 	}
 }
 

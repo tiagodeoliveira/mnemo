@@ -58,16 +58,21 @@ func main() {
 	}
 
 	// LLM client construction.
-	var llmClient llm.Client
+	var rawLlm llm.Client
 	if cfg.LLMDisabled {
-		llmClient = &llm.Stub{}
+		rawLlm = &llm.Stub{}
 		logger.Warn("MNEMO_LLM_DISABLED=1: using stub LLM")
 	} else {
 		if cfg.AnthropicAPIKey == "" {
 			logger.Error("ANTHROPIC_API_KEY required when MNEMO_LLM_DISABLED is not set")
 			os.Exit(7)
 		}
-		llmClient = &llm.Anthropic{APIKey: cfg.AnthropicAPIKey}
+		rawLlm = &llm.Anthropic{APIKey: cfg.AnthropicAPIKey}
+	}
+	// Wrap with concurrency throttle.
+	llmClient := llm.NewThrottled(rawLlm, cfg.LLMMaxConcurrent)
+	if cfg.LLMMaxConcurrent > 0 {
+		logger.Info("LLM concurrency throttle", "max_concurrent", cfg.LLMMaxConcurrent)
 	}
 
 	// Embed client construction.

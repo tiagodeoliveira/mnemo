@@ -15,9 +15,10 @@ type Config struct {
 	Auth0Domain   string `env:"AUTH0_DOMAIN"`
 	Auth0Audience string `env:"AUTH0_API_AUDIENCE"`
 
-	LLMDisabled     bool   `env:"MNEMO_LLM_DISABLED"`
-	AnthropicAPIKey string `env:"ANTHROPIC_API_KEY"`
-	LLMModel        string `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
+	LLMDisabled      bool   `env:"MNEMO_LLM_DISABLED"`
+	AnthropicAPIKey  string `env:"ANTHROPIC_API_KEY"`
+	LLMModel         string `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
+	LLMMaxConcurrent int    `env:"MNEMO_LLM_MAX_CONCURRENT" envDefault:"4"`
 
 	EmbedDisabled bool   `env:"MNEMO_EMBED_DISABLED"`
 	EmbedModel    string `env:"MNEMO_EMBED_MODEL" envDefault:"text-embedding-3-small"`
