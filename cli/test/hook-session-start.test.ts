@@ -6,10 +6,16 @@ global.fetch = mockFetch;
 vi.mock('../src/config', () => ({
   loadConfig: () => ({
     apiUrl: 'https://api.test.com/v1',
-    apiKey: 'test-key',
+    auth0Domain: 'tenant.us.auth0.com',
+    auth0Audience: 'https://api.test.com',
+    auth0ClientId: 'client-123',
     workstation: 'test-ws',
     defaults: { visible: true },
   }),
+}));
+
+vi.mock('../src/auth', () => ({
+  getAccessToken: vi.fn().mockResolvedValue('mock-jwt'),
 }));
 
 vi.mock('../src/detect-project', () => ({
@@ -23,15 +29,27 @@ describe('hook-session-start', () => {
     vi.clearAllMocks();
   });
 
-  it('calls recall and returns hook JSON', async () => {
+  it('calls recall and returns hook JSON with the recalled context', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () =>
         Promise.resolve({
-          preferences: [{ id: '1', content: 'likes TypeScript', score: 0.9, createdAt: '2024-01-01' }],
-          facts: [],
-          episodes: [],
-          project: { name: 'test-project', memories: [{ id: '2', content: 'uses CDK', score: 0.8, createdAt: '2024-01-01' }] },
+          dimensions: [
+            {
+              dimension: 'preferences',
+              namespace: '/preferences/dev-actor/',
+              items: [
+                { id: '1', content: 'likes TypeScript', tags: [], created_at: '', updated_at: '', reinforced_count: 1 },
+              ],
+            },
+            {
+              dimension: 'project',
+              namespace: '/projects/dev-actor/test-project/',
+              items: [
+                { id: '2', content: 'uses Postgres', tags: [], created_at: '', updated_at: '', reinforced_count: 1 },
+              ],
+            },
+          ],
         }),
     });
 
@@ -41,17 +59,17 @@ describe('hook-session-start', () => {
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('/recall');
     expect(url).toContain('preferences=true');
-    expect(url).toContain('facts=true');
     expect(url).toContain('about=true');
-    expect(url).not.toContain('episodes');
     expect(url).toContain('project=test-project');
     expect(url).toContain('task=coding');
+    // facts was dropped in v2 — make sure the hook never asks for it.
+    expect(url).not.toContain('facts');
 
     expect(output).toBeDefined();
     const parsed = JSON.parse(output!);
     expect(parsed.hookSpecificOutput.hookEventName).toBe('SessionStart');
     expect(parsed.hookSpecificOutput.additionalContext).toContain('likes TypeScript');
-    expect(parsed.hookSpecificOutput.additionalContext).toContain('uses CDK');
+    expect(parsed.hookSpecificOutput.additionalContext).toContain('uses Postgres');
   });
 
   it('returns undefined when cwd is missing', async () => {
@@ -60,10 +78,10 @@ describe('hook-session-start', () => {
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it('returns undefined when recall returns empty response', async () => {
+  it('returns undefined when recall returns no items', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: () => Promise.resolve({}),
+      json: () => Promise.resolve({ dimensions: [] }),
     });
 
     const output = await executeHookSessionStart({ cwd: '/home/user/project' });
