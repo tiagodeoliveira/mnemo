@@ -10,10 +10,10 @@ import (
 // Categories in the order the prompt produces them.
 var Categories = []string{"summary", "decisions", "actions", "questions", "highlights", "followups"}
 
-// SystemMeetingSummary is ported verbatim from buildMeetingSummaryPrompt in
-// infra/lambda/context-extractor/index.ts (lines 486-538).
-//
-// Two %s placeholders: meetingId, transcript. Caller injects via fmt.Sprintf.
+// SystemMeetingSummary produces the six per-meeting categories
+// (summary, decisions, actions, questions, highlights, followups) from a full
+// transcript. Two %s placeholders: meetingId, transcript. Caller injects via
+// fmt.Sprintf.
 const SystemMeetingSummary = `You are producing a faithful, durable memory of a recorded meeting. This summary will be read weeks later with no other context, so fidelity matters more than polish.
 
 Meeting id: %s

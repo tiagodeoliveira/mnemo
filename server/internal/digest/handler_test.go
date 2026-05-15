@@ -25,10 +25,12 @@ func TestDigestHandlerWritesSummary(t *testing.T) {
 
 	// Seed two daily_log entries for 2026-05-13.
 	tx, _ := s.DB.BeginTx(ctx, nil)
+	eventID := uuid.New()
 	for _, entry := range []string{"worked on rewrite", "shipped task 24"} {
-		if err := s.InsertAppendMemory(ctx, tx, store.MemoryInput{
+		if _, err := s.InsertItem(ctx, tx, store.ItemInput{
 			ActorID: "alice", Dimension: "daily_log",
 			Namespace: "/daily/alice/2026-05-13/log/", Content: entry,
+			SourceEventID: eventID,
 		}); err != nil {
 			t.Fatal(err)
 		}

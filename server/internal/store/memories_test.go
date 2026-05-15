@@ -554,42 +554,6 @@ func TestResolveDiff_EmptyInsertDropped(t *testing.T) {
 	}
 }
 
-func TestQueryByPrefix(t *testing.T) {
-	dsn := startPG(t)
-	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
-	if err := s.Migrate(); err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	if _, err := s.UpsertActor(ctx, "alice"); err != nil {
-		t.Fatal(err)
-	}
-
-	eventID := uuid.New()
-	tx, _ := s.DB.BeginTx(ctx, nil)
-	for _, ns := range []string{"/projects/alice/foo/", "/projects/alice/bar/"} {
-		if _, err := s.InsertItem(ctx, tx, ItemInput{
-			ActorID:       "alice",
-			Dimension:     "project",
-			Namespace:     ns,
-			Content:       "fact for " + ns,
-			SourceEventID: eventID,
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_ = tx.Commit()
-
-	got, err := s.QueryByPrefix(ctx, RecallFilter{ActorID: "alice", NamespacePref: "/projects/alice/"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("want 2 rows, got %d", len(got))
-	}
-}
-
 func TestDeleteAppendItemsForEvent(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
@@ -635,9 +599,10 @@ func TestDeleteAppendItemsForEvent(t *testing.T) {
 	}
 }
 
-// TestUpsertConsolidatedMemory exercises the backward-compat wrapper (used by
-// meeting and digest handlers). It should delete+reinsert on repeat calls.
-func TestUpsertConsolidatedMemory(t *testing.T) {
+// TestReplaceItemByNamespace covers the single-row-per-namespace pattern used
+// by digest (daily_summary) and meeting (per-category) writes: each call
+// supersedes any prior row at the same (actor, namespace).
+func TestReplaceItemByNamespace(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
 	defer s.Close()
@@ -651,7 +616,7 @@ func TestUpsertConsolidatedMemory(t *testing.T) {
 
 	ns := "/meetings/alice/m1/summary/"
 	tx, _ := s.DB.BeginTx(ctx, nil)
-	if err := s.UpsertConsolidatedMemory(ctx, tx, MemoryInput{
+	if err := s.ReplaceItemByNamespace(ctx, tx, ItemInput{
 		ActorID: "alice", Dimension: "meeting", Namespace: ns, Content: "v1",
 	}); err != nil {
 		t.Fatal(err)
@@ -659,7 +624,7 @@ func TestUpsertConsolidatedMemory(t *testing.T) {
 	_ = tx.Commit()
 
 	tx2, _ := s.DB.BeginTx(ctx, nil)
-	if err := s.UpsertConsolidatedMemory(ctx, tx2, MemoryInput{
+	if err := s.ReplaceItemByNamespace(ctx, tx2, ItemInput{
 		ActorID: "alice", Dimension: "meeting", Namespace: ns, Content: "v2",
 	}); err != nil {
 		t.Fatal(err)

@@ -117,7 +117,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	defer tx.Rollback()
 
 	for i, cb := range catBodies {
-		if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
+		if err := h.Store.ReplaceItemByNamespace(ctx, tx, store.ItemInput{
 			ActorID:   p.ActorID,
 			Dimension: "meeting",
 			Namespace: fmt.Sprintf("/meetings/%s/%s/%s/", p.ActorID, p.MeetingID, cb.cat),

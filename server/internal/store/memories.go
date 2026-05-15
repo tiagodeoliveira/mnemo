@@ -30,18 +30,6 @@ type Memory struct {
 	// Embedding is intentionally not exposed; not needed for non-search reads.
 }
 
-// MemoryInput is the write-side input for inserting a new item.
-// Kept for backward compatibility with digest and meeting handlers.
-type MemoryInput struct {
-	ActorID       string
-	Dimension     string
-	Namespace     string
-	Content       string
-	Attributes    json.RawMessage
-	SourceEventID *uuid.UUID
-	Embedding     []float32 // optional; nil = embedding column stays NULL
-}
-
 // ItemInput is the canonical write-side input for inserting a new item.
 type ItemInput struct {
 	ActorID       string
@@ -88,29 +76,6 @@ func (s *Store) InsertItem(ctx context.Context, tx *sql.Tx, in ItemInput) (uuid.
 	`, id, in.ActorID, in.Dimension, in.Namespace, in.Content,
 		tags, attrs, in.SourceEventID, expiresAt, embVal)
 	return id, err
-}
-
-// InsertAppendMemory inserts a row using MemoryInput (backward-compat wrapper
-// used by digest and meeting handlers). It maps to InsertItem internally.
-func (s *Store) InsertAppendMemory(ctx context.Context, tx *sql.Tx, m MemoryInput) error {
-	tags := []string{}
-	attrs := m.Attributes
-	var eventID uuid.UUID
-	if m.SourceEventID != nil {
-		eventID = *m.SourceEventID
-	}
-	in := ItemInput{
-		ActorID:       m.ActorID,
-		Dimension:     m.Dimension,
-		Namespace:     m.Namespace,
-		Content:       m.Content,
-		Tags:          tags,
-		Attributes:    attrs,
-		SourceEventID: eventID,
-		Embedding:     m.Embedding,
-	}
-	_, err := s.InsertItem(ctx, tx, in)
-	return err
 }
 
 // ListItemsByNamespace returns all items in a namespace, oldest first.
@@ -204,47 +169,6 @@ func (s *Store) ListItems(ctx context.Context, opts ListItemsOpts) ([]Memory, er
 	return scanMemories(rows)
 }
 
-// RecallFilter is kept for backward compatibility with recall.go.
-// TODO(stage4): remove after recall.go is rewritten.
-type RecallFilter struct {
-	ActorID       string
-	NamespacePref string            // namespace prefix
-	AttrFilters   map[string]string // attributes->>k = v
-	Limit         int
-}
-
-// QueryByPrefix returns memories whose namespace starts with prefix, ordered newest first.
-// TODO(stage4): remove after recall.go is rewritten.
-func (s *Store) QueryByPrefix(ctx context.Context, f RecallFilter) ([]Memory, error) {
-	args := []any{f.ActorID, f.NamespacePref + "%"}
-	clauses := []string{"actor_id = $1", "namespace LIKE $2"}
-	idx := 3
-	for k, v := range f.AttrFilters {
-		clauses = append(clauses, fmt.Sprintf("attributes->>$%d = $%d", idx, idx+1))
-		args = append(args, k, v)
-		idx += 2
-	}
-	limit := f.Limit
-	if limit <= 0 {
-		limit = 100
-	}
-	q := fmt.Sprintf(`
-		SELECT memory_id, actor_id, dimension, namespace, content,
-		       tags, attributes, source_event_ids, reinforced_count,
-		       created_at, updated_at, expires_at
-		  FROM memories
-		 WHERE %s
-		 ORDER BY updated_at DESC
-		 LIMIT %d
-	`, strings.Join(clauses, " AND "), limit)
-	rows, err := s.DB.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanMemories(rows)
-}
-
 // DeleteAppendItemsForEvent removes prior append-dim writes for an event.
 // Used by extract_context retries to guarantee idempotency.
 func (s *Store) DeleteAppendItemsForEvent(ctx context.Context, tx *sql.Tx, eventID uuid.UUID, dims []string) error {
@@ -265,25 +189,18 @@ func (s *Store) DeleteAppendItemsForEvent(ctx context.Context, tx *sql.Tx, event
 	return err
 }
 
-// DeleteAppendMemoriesForEvent is kept for backward compatibility.
-// TODO(stage4): remove.
-func (s *Store) DeleteAppendMemoriesForEvent(ctx context.Context, tx *sql.Tx, actor string, eventID uuid.UUID, dims []string) error {
-	return s.DeleteAppendItemsForEvent(ctx, tx, eventID, dims)
-}
-
-// UpsertConsolidatedMemory is kept for backward compatibility with meeting and
-// digest handlers. It now wraps InsertItem after deleting any prior row for
-// the same (actor, namespace) to preserve upsert semantics.
-// TODO(stage4): remove once meeting/digest use InsertItem directly.
-func (s *Store) UpsertConsolidatedMemory(ctx context.Context, tx *sql.Tx, m MemoryInput) error {
-	// Delete any prior row for same (actor, namespace).
-	_, err := tx.ExecContext(ctx,
+// ReplaceItemByNamespace deletes any prior row at (actor, namespace) and
+// inserts a fresh one. Use for single-row-per-namespace dimensions
+// (daily_summary, per-meeting categories) where each write supersedes the
+// previous content for that namespace.
+func (s *Store) ReplaceItemByNamespace(ctx context.Context, tx *sql.Tx, in ItemInput) error {
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM memories WHERE actor_id=$1 AND namespace=$2`,
-		m.ActorID, m.Namespace)
-	if err != nil {
+		in.ActorID, in.Namespace); err != nil {
 		return err
 	}
-	return s.InsertAppendMemory(ctx, tx, m)
+	_, err := s.InsertItem(ctx, tx, in)
+	return err
 }
 
 // scanMemories scans a result-set into []Memory.

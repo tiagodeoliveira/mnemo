@@ -2,14 +2,11 @@ package extract
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Extractor prompts — produce candidate NewItem lists from a conversation.
-// These are semantically the same as the v1 prompts; the output format is
-// unchanged because parse.go still parses them. They have been renamed for
-// clarity (System* → SystemExtract*) but the body is ported verbatim.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// SystemExtractClassifier is ported verbatim from SystemProjectTaskDailyLog.
-// Output: TASK:/FACTS:/DAILY: format. FACTS lines become NewItem candidates
-// for /projects/.../ and /tasks/.../ namespaces in handler.go.
+// SystemExtractClassifier classifies the task domain and emits FACTS lines that
+// become NewItem candidates for /projects/.../ and /tasks/.../ namespaces in
+// handler.go. Output format: TASK:/FACTS:/DAILY: (parsed by parse.go).
 //
 // Two %s placeholders (same as before):
 //   %s[0] — optional known-context block (project name / workdir)
@@ -31,9 +28,8 @@ FACTS:
 DAILY:
 <3-8 sentence detailed log entry, or NONE if nothing meaningful>`
 
-// SystemExtractAbout is the biographical extractor. Ported verbatim from
-// SystemAbout. Output: ABOUT: <lines> where each line becomes a NewItem
-// candidate for the about dimension.
+// SystemExtractAbout is the biographical extractor. Output: ABOUT: <lines>
+// where each line becomes a NewItem candidate for the about dimension.
 const SystemExtractAbout = `You are extracting biographical facts about the person (the "actor") who is participating in this conversation.
 
 WHAT COUNTS AS ABOUT-ME CONTENT:
@@ -60,9 +56,8 @@ OUTPUT FORMAT:
 ABOUT:
 <one short factual statement per line, or NONE if nothing biographical surfaced>`
 
-// SystemExtractPreferences is ported verbatim from SystemPreferences.
-// Output: {"preferences": ["...", ...]} becoming NewItem candidates for the
-// preferences dimension.
+// SystemExtractPreferences yields NewItem candidates for the preferences
+// dimension. Output: {"preferences": ["...", ...]}.
 const SystemExtractPreferences = `Extract durable user preferences from this conversation: coding style, tool choices, workflow conventions.
 
 Return a single JSON object: {"preferences": ["string", ...]}.
@@ -74,7 +69,7 @@ Rules:
 - Empty array if no preferences were expressed.
 - Output JSON only. No prose, no code fences.`
 
-// SystemExtractEpisodes is ported verbatim from SystemEpisodes.
+// SystemExtractEpisodes yields structured episodes for the episodes dimension.
 // Output: {"episodes": [{event, reflection}]}.
 const SystemExtractEpisodes = `Extract structured episodes from this conversation.
 
@@ -89,14 +84,6 @@ Rules:
 - Skip code/paths/version strings.
 - Empty array if no episodes match.
 - Output JSON only.`
-
-// Keep old names as aliases so the integration test (which still references them
-// by the old constant names) continues to compile. These will be removed in Stage 4.
-// TODO(stage4): remove these aliases once the integration test is updated.
-const SystemProjectTaskDailyLog = SystemExtractClassifier
-const SystemPreferences = SystemExtractPreferences
-const SystemEpisodes = SystemExtractEpisodes
-const SystemAbout = SystemExtractAbout
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Consolidation prompts — called once per dimension per event, with the full

@@ -92,7 +92,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := h.Store.UpsertConsolidatedMemory(ctx, tx, store.MemoryInput{
+	if err := h.Store.ReplaceItemByNamespace(ctx, tx, store.ItemInput{
 		ActorID:   p.ActorID,
 		Dimension: "daily_summary",
 		Namespace: fmt.Sprintf("/daily/%s/%s/summary/", p.ActorID, p.Date),
