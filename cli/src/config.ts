@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { DEFAULTS } from './defaults.js';
+
 export interface MnemoConfig {
   apiUrl: string;
   auth0Domain: string;
@@ -13,9 +15,12 @@ export interface MnemoConfig {
   };
 }
 
-const DEFAULT_AUTH0_DOMAIN   = 'dev-jrva0wzk3qkdxcar.us.auth0.com';
-const DEFAULT_AUTH0_AUDIENCE = 'https://kleos.tiago.tools';
-const DEFAULT_AUTH0_CLIENT_ID = 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS';
+// Re-exposed at this layer so the rest of the file's narrative reads
+// the same as before. Source of truth is `defaults.ts`, which CI
+// regenerates at release time.
+const DEFAULT_AUTH0_DOMAIN = DEFAULTS.auth0Domain;
+const DEFAULT_AUTH0_AUDIENCE = DEFAULTS.auth0Audience;
+const DEFAULT_AUTH0_CLIENT_ID = DEFAULTS.auth0ClientId;
 
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.mnemo', 'config.json');
 

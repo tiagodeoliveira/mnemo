@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { DEFAULTS } from '../defaults.js';
+
 const SUPPORTED_CLIENTS = ['claude-code', 'codex', 'gemini-cli', 'openclaw'] as const;
 type SupportedClient = typeof SUPPORTED_CLIENTS[number];
 
@@ -103,7 +105,7 @@ function ensureMnemoConfig(mnemoConfigPath: string): boolean {
     mnemoConfigPath,
     JSON.stringify(
       {
-        apiUrl: 'https://mnemo.tiago.tools',
+        apiUrl: DEFAULTS.apiUrl,
         // auth0 fields omitted — defaults baked in. Override here if you run your own Auth0 tenant.
         workstation: os.hostname(),
         defaults: { visible: true },

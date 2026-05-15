@@ -1,13 +1,6 @@
-const $ = (id) => document.getElementById(id);
+import { DEFAULTS } from './defaults.js';
 
-const DEFAULTS = {
-  apiUrl: 'https://mnemo.tiago.tools',
-  auth0Domain: 'dev-jrva0wzk3qkdxcar.us.auth0.com',
-  auth0Audience: 'https://kleos.tiago.tools',
-  auth0ClientId: 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS',
-  workstation: 'chrome-extension',
-  enabled: true,
-};
+const $ = (id) => document.getElementById(id);
 
 function originPattern(apiUrl) {
   try {

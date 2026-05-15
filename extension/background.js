@@ -1,6 +1,8 @@
 // Service worker. Receives events from content scripts, pushes captures to
 // mnemo, maintains health state, and reflects status in the toolbar icon.
 
+import { DEFAULTS } from './defaults.js';
+
 const HEALTH = {
   // Global counters
   captures: 0,
@@ -23,14 +25,8 @@ const HEALTH = {
 const RECENT_CAPTURES_MAX = 20;
 const STALE_AFTER_MS = 10 * 60 * 1000; // 10 min on-site without capture → yellow
 
-const DEFAULTS = {
-  apiUrl: 'https://mnemo.tiago.tools',
-  auth0Domain: 'dev-jrva0wzk3qkdxcar.us.auth0.com',
-  auth0Audience: 'https://kleos.tiago.tools',
-  auth0ClientId: 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS',
-  workstation: 'chrome-extension',
-  enabled: true,
-};
+// DEFAULTS imported from ./defaults.js — CI regenerates that file at
+// release time from GitHub repo Variables.
 
 // ---- Auth0 device flow + token storage ------------------------------------
 // Tokens live in chrome.storage.local under 'mnemo_creds' as
