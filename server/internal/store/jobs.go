@@ -23,6 +23,28 @@ type Job struct {
 	Attempts int
 }
 
+// ReclaimStaleJobs resets any `state='running'` rows to `state='pending'`.
+// Call this at server boot, BEFORE the worker pool starts claiming jobs.
+//
+// Invariant: when main() reaches the worker-pool setup, no worker can
+// possibly hold a lock yet. Therefore any row in 'running' is by definition
+// stale (the previous process crashed mid-job and never called FailJob).
+// Resetting them to 'pending' lets the new worker pool re-claim them.
+//
+// Returns the number of rows reclaimed (informational).
+func (s *Store) ReclaimStaleJobs(ctx context.Context) (int64, error) {
+	res, err := s.DB.ExecContext(ctx, `
+		UPDATE jobs
+		   SET state = 'pending', locked_by = NULL, locked_at = NULL
+		 WHERE state = 'running'
+	`)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // EnqueueJob inserts a pending job. Must be called inside a tx.
 func (s *Store) EnqueueJob(ctx context.Context, tx *sql.Tx, kind JobKind, payload any) error {
 	b, err := json.Marshal(payload)

@@ -107,6 +107,14 @@ func main() {
 		store.KindDailyDigest:        digestHandler.Handle,
 		store.KindBackfillEmbeddings: backfillHandler.Handle,
 	}
+	// Reclaim any 'running' jobs left over from a previous server's crash.
+	// Safe at boot because no worker can possibly hold a lock yet.
+	if n, err := s.ReclaimStaleJobs(ctx); err != nil {
+		logger.Warn("reclaim stale jobs failed", "err", err)
+	} else if n > 0 {
+		logger.Info("reclaimed stale running jobs from prior boot", "count", n)
+	}
+
 	registered := make([]string, 0, len(handlers))
 	for k := range handlers {
 		registered = append(registered, string(k))
