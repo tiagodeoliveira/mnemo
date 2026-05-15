@@ -11,4 +11,8 @@ FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /out/mnemo-server /mnemo-server
 USER nonroot:nonroot
 EXPOSE 8080
+# Distroless has no shell/wget/curl; the binary acts as its own probe
+# via the `healthz` subcommand (see cmd/mnemo-server/main.go).
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=5 \
+    CMD ["/mnemo-server", "healthz"]
 ENTRYPOINT ["/mnemo-server"]

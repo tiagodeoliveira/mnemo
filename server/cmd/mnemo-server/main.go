@@ -23,6 +23,20 @@ import (
 )
 
 func main() {
+	// Subcommands. The binary is the only thing inside the distroless
+	// image — no shell, no wget/curl — so a `healthz` subcommand is
+	// what makes a working container healthcheck possible. See the
+	// Dockerfile's HEALTHCHECK and downstream compose probes.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "healthz":
+			healthzExit()
+		default:
+			_, _ = os.Stderr.WriteString("unknown subcommand: " + os.Args[1] + "\n")
+			os.Exit(2)
+		}
+	}
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	cfg, err := config.Load()
@@ -199,4 +213,25 @@ func main() {
 		logger.Error("shutdown", "err", err)
 	}
 	<-poolDone
+}
+
+// healthzExit probes the locally-listening /healthz and exits 0 on
+// HTTP 200, 1 otherwise. Invoked via `mnemo-server healthz` from the
+// container healthcheck; the distroless base has no probe tools, so
+// the binary has to act as its own probe.
+func healthzExit() {
+	port := os.Getenv("MNEMO_PORT")
+	if port == "" {
+		port = "8080"
+	}
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		os.Exit(1)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
