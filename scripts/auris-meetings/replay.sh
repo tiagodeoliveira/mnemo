@@ -95,7 +95,7 @@ post_chunk() {
       turns: $turns,
       attributes: {
         meeting_id: $mid,
-        meeting_ended: ($ended | tostring),
+        meeting_ended: $ended,
         mode: "transcript",
         source: "auris-replay"
       }
