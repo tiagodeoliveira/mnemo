@@ -3,7 +3,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/', '**/node_modules/', '**/*.js', '**/*.d.ts'],
+    ignores: ['dist/', 'node_modules/', '**/*.js', '**/*.d.ts'],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
@@ -14,10 +14,8 @@ export default tseslint.config(
         projectService: {
           allowDefaultProject: [
             'eslint.config.mjs',
-            '*.config.ts',
-            'cli/vitest.config.ts',
-            'cli/test/*.test.ts',
-            'scripts/*.ts',
+            'vitest.config.ts',
+            'test/*.test.ts',
           ],
           maximumDefaultProjectFileMatchCount_THIS_WILL_SLOW_DOWN_LINTING: 20,
         },

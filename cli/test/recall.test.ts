@@ -194,9 +194,9 @@ describe('formatRecallOutput', () => {
         {
           id: 'e1',
           content: JSON.stringify({
-            title: 'Debugging IAM Propagation',
-            use_cases: 'Applies when deploying AgentCore resources',
-            hints: 'Check both identity and resource policies',
+            title: 'Debugging Postgres advisory locks',
+            use_cases: 'Applies when running multiple workers',
+            hints: 'Check pg_locks for stuck sessions',
             confidence: '0.9',
           }),
           score: 0.85,
@@ -205,8 +205,8 @@ describe('formatRecallOutput', () => {
       ],
     };
     const output = formatRecallOutput(response, true);
-    expect(output).toContain('### Debugging IAM Propagation');
-    expect(output).toContain('**Use cases:** Applies when deploying');
+    expect(output).toContain('### Debugging Postgres advisory locks');
+    expect(output).toContain('**Use cases:** Applies when running multiple workers');
     expect(output).toContain('**Hints:** Check both identity');
     expect(output).toContain('**Confidence:** 0.9');
     expect(output).not.toContain('"title"');
