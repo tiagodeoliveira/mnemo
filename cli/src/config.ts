@@ -14,7 +14,7 @@ export interface MnemoConfig {
 }
 
 const DEFAULT_AUTH0_DOMAIN   = 'dev-jrva0wzk3qkdxcar.us.auth0.com';
-const DEFAULT_AUTH0_AUDIENCE = 'https://mnemo.tiago.tools';
+const DEFAULT_AUTH0_AUDIENCE = 'https://kleos.tiago.tools';
 const DEFAULT_AUTH0_CLIENT_ID = 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS';
 
 const DEFAULT_CONFIG_PATH = path.join(os.homedir(), '.mnemo', 'config.json');

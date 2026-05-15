@@ -26,7 +26,7 @@ const STALE_AFTER_MS = 10 * 60 * 1000; // 10 min on-site without capture → yel
 const DEFAULTS = {
   apiUrl: 'https://mnemo.tiago.tools',
   auth0Domain: 'dev-jrva0wzk3qkdxcar.us.auth0.com',
-  auth0Audience: 'https://mnemo.tiago.tools',
+  auth0Audience: 'https://kleos.tiago.tools',
   auth0ClientId: 'naKbYOFItrLOwttTMZQ8pQSBJYwyJuzS',
   workstation: 'chrome-extension',
   enabled: true,
