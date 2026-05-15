@@ -96,10 +96,12 @@ func (s *Store) FailJob(ctx context.Context, id int64, attempts int, errMsg stri
 		`, id, errMsg)
 		return err
 	}
+	// make_interval(secs => $3) accepts an int directly, avoiding the
+	// int → text → interval coercion that pgx can't encode through.
 	_, err := s.DB.ExecContext(ctx, `
 		UPDATE jobs
 		   SET state='pending', last_error=$2,
-		       run_after = now() + ($3 || ' seconds')::interval,
+		       run_after = now() + make_interval(secs => $3),
 		       locked_by=NULL, locked_at=NULL
 		 WHERE job_id=$1
 	`, id, errMsg, runAfterSec)
