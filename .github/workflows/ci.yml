@@ -42,4 +42,3 @@ jobs:
           cache: npm
       - run: npm ci
       - run: cd cli && npx vitest run
-      - run: cd infra && npx vitest run

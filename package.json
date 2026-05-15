@@ -11,21 +11,19 @@
   "keywords": [
     "ai",
     "memory",
-    "bedrock",
-    "agentcore",
     "claude",
+    "postgres",
     "cli"
   ],
   "engines": {
     "node": ">=22"
   },
   "workspaces": [
-    "infra",
     "cli"
   ],
   "scripts": {
-    "lint": "eslint 'cli/**/*.ts' 'infra/**/*.ts' --max-warnings 0",
-    "lint:fix": "eslint 'cli/**/*.ts' 'infra/**/*.ts' --fix --max-warnings 0",
+    "lint": "eslint 'cli/**/*.ts' --max-warnings 0",
+    "lint:fix": "eslint 'cli/**/*.ts' --fix --max-warnings 0",
     "test": "npm test --workspaces",
     "build": "npm run build --workspaces",
     "prepare": "husky"
