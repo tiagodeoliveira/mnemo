@@ -89,7 +89,7 @@ async function save() {
 }
 
 async function signIn() {
-  setStatus('Opening Auth0 sign-in tab…', true);
+  setStatus('Opening Auth0 sign-in…', true);
   let resp;
   try {
     resp = await chrome.runtime.sendMessage({ type: 'mnemo:startLogin' });
@@ -101,18 +101,8 @@ async function signIn() {
     setStatus(`Login failed: ${resp && resp.error || 'unknown error'}`, false);
     return;
   }
-  setStatus(`A new tab opened. Approve code ${resp.user_code} to complete sign-in.`, true);
-  // Poll auth status until signed in or 60 s elapsed.
-  let attempts = 0;
-  const t = setInterval(async () => {
-    attempts++;
-    const s = await chrome.runtime.sendMessage({ type: 'mnemo:authStatus' });
-    if ((s && s.signedIn) || attempts > 30) {
-      clearInterval(t);
-      await refreshAuthStatus();
-      if (s && s.signedIn) setStatus('Signed in successfully.', true);
-    }
-  }, 2000);
+  await refreshAuthStatus();
+  setStatus('Signed in successfully.', true);
 }
 
 async function signOut() {

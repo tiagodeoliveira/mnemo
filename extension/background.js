@@ -28,41 +28,87 @@ const STALE_AFTER_MS = 10 * 60 * 1000; // 10 min on-site without capture → yel
 // DEFAULTS imported from ./defaults.js — CI regenerates that file at
 // release time from GitHub repo Variables.
 
-// ---- Auth0 device flow + token storage ------------------------------------
+// ---- Auth0 PKCE login + token storage -------------------------------------
 // Tokens live in chrome.storage.local under 'mnemo_creds' as
 // { access_token, refresh_token, expires_at }.
+//
+// We use PKCE (Authorization Code + S256) via chrome.identity.launchWebAuthFlow
+// because Auth0's device-flow endpoint (/oauth/device/code) doesn't support
+// CORS and is intended for input-constrained clients only. PKCE lets a
+// browser extension act as a public client without a secret.
 
 const CRED_KEY = 'mnemo_creds';
 
-async function startDeviceLogin(cfg) {
-  const dcRes = await fetch(`https://${cfg.auth0Domain}/oauth/device/code`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: cfg.auth0ClientId,
-      scope: 'openid profile email offline_access',
-      audience: cfg.auth0Audience,
-    }),
-  });
-  if (!dcRes.ok) throw new Error(`device/code ${dcRes.status}`);
-  const dc = await dcRes.json();
-  // Open the verification page for the user.
-  chrome.tabs.create({ url: dc.verification_uri_complete });
-  return dc; // caller will poll
+function base64url(bytes) {
+  let s = '';
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function pollDeviceToken(cfg, deviceCode) {
-  const res = await fetch(`https://${cfg.auth0Domain}/oauth/token`, {
+function randomBase64url(byteLen) {
+  const buf = new Uint8Array(byteLen);
+  crypto.getRandomValues(buf);
+  return base64url(buf);
+}
+
+async function sha256Base64url(input) {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return base64url(new Uint8Array(digest));
+}
+
+// startPkceLogin runs the full authorize → callback → token-exchange flow.
+// Returns the access_token (already stored) or throws on cancel/failure.
+async function startPkceLogin(cfg) {
+  const redirectUri = chrome.identity.getRedirectURL(); // https://<ext-id>.chromiumapp.org/
+  const codeVerifier = randomBase64url(32);
+  const codeChallenge = await sha256Base64url(codeVerifier);
+  const state = randomBase64url(16);
+
+  const authUrl = `https://${cfg.auth0Domain}/authorize?` + new URLSearchParams({
+    response_type: 'code',
+    client_id: cfg.auth0ClientId,
+    redirect_uri: redirectUri,
+    scope: 'openid profile email offline_access',
+    audience: cfg.auth0Audience,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+    state,
+  }).toString();
+
+  const redirected = await chrome.identity.launchWebAuthFlow({
+    url: authUrl,
+    interactive: true,
+  });
+  if (!redirected) throw new Error('login cancelled');
+
+  const u = new URL(redirected);
+  const returnedState = u.searchParams.get('state');
+  if (returnedState !== state) throw new Error('state mismatch');
+  const err = u.searchParams.get('error');
+  if (err) throw new Error(`${err}: ${u.searchParams.get('error_description') || ''}`);
+  const code = u.searchParams.get('code');
+  if (!code) throw new Error('no code in redirect');
+
+  const tokRes = await fetch(`https://${cfg.auth0Domain}/oauth/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-      device_code: deviceCode,
+      grant_type: 'authorization_code',
       client_id: cfg.auth0ClientId,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: codeVerifier,
     }),
   });
-  const t = await res.json();
-  return t; // {access_token,...} | {error:'authorization_pending'|...}
+  if (!tokRes.ok) {
+    const body = await tokRes.text();
+    throw new Error(`token exchange ${tokRes.status}: ${body}`);
+  }
+  const t = await tokRes.json();
+  if (!t.access_token) throw new Error('no access_token in response');
+  await saveCredentials(t);
+  return t.access_token;
 }
 
 async function saveCredentials(t) {
@@ -313,31 +359,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     void refreshUi();
     return;
   }
-  if (alarm.name === 'mnemo-login-poll') {
-    // Delegated to the stored poll state; nothing to do here unless
-    // options.js re-sends a startLogin. The alarm fires the tick closure
-    // stored in the outer scope by handleMessage. Because service workers
-    // can restart between alarms, we re-read config and device_code from
-    // storage if available.
-    const got = await chrome.storage.local.get('mnemo_login_pending');
-    const pending = got.mnemo_login_pending;
-    if (!pending) return;
-    if (Date.now() > pending.deadline) {
-      await chrome.storage.local.remove('mnemo_login_pending');
-      return;
-    }
-    const cfg = await loadConfig();
-    const t = await pollDeviceToken(cfg, pending.device_code);
-    if (t.access_token) {
-      await saveCredentials(t);
-      await chrome.storage.local.remove('mnemo_login_pending');
-      return;
-    }
-    if (!t.error || t.error === 'authorization_pending' || t.error === 'slow_down') {
-      const interval = t.error === 'slow_down' ? pending.interval + 5 : pending.interval;
-      chrome.alarms.create('mnemo-login-poll', { when: Date.now() + interval * 1000 });
-    }
-  }
 });
 
 // ---- Event handling -------------------------------------------------------
@@ -459,20 +480,8 @@ async function handleMessage(msg, sender) {
     case 'mnemo:startLogin': {
       const cfg = await loadConfig();
       try {
-        const dc = await startDeviceLogin(cfg);
-        const deadline = Date.now() + dc.expires_in * 1000;
-        const interval = Math.max(5, dc.interval || 5);
-        // Persist pending state so the alarm handler can resume after SW restart.
-        await chrome.storage.local.set({
-          mnemo_login_pending: {
-            device_code: dc.device_code,
-            deadline,
-            interval,
-          },
-        });
-        // Schedule first poll.
-        chrome.alarms.create('mnemo-login-poll', { when: Date.now() + interval * 1000 });
-        return { ok: true, verification_uri_complete: dc.verification_uri_complete, user_code: dc.user_code };
+        await startPkceLogin(cfg);
+        return { ok: true };
       } catch (e) {
         return { ok: false, error: String(e && e.message || e) };
       }
