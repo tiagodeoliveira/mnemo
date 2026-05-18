@@ -36,6 +36,11 @@ jobs:
           platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # VERSION: tag name on a release, branch name otherwise.
+          # COMMIT: full SHA; the image tag is sha-<7-char prefix>.
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
 
   publish-cli:
     if: startsWith(github.ref, 'refs/tags/v')

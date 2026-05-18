@@ -5,7 +5,14 @@ RUN apk add --no-cache git
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/mnemo-server ./cmd/mnemo-server
+# Stamp version + commit into the binary so the startup banner is honest
+# about which build is running. CI passes these via --build-arg; local
+# builds fall through to the "dev"/"unknown" defaults in main.go.
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" \
+    -o /out/mnemo-server ./cmd/mnemo-server
 
 FROM gcr.io/distroless/static:nonroot
 COPY --from=builder /out/mnemo-server /mnemo-server

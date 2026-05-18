@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -20,6 +21,13 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/meeting"
 	"github.com/tiagodeoliveira/mnemo/server/internal/queue"
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
+)
+
+// Stamped at build time via -ldflags "-X main.version=… -X main.commit=…".
+// Defaults are what an unstamped `go build` produces — useful for local dev.
+var (
+	version = "dev"
+	commit  = "unknown"
 )
 
 func main() {
@@ -38,6 +46,11 @@ func main() {
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	logger.Info("mnemo-server starting",
+		"version", version,
+		"commit", commit,
+		"go", runtime.Version(),
+		"pid", os.Getpid())
 
 	cfg, err := config.Load()
 	if err != nil {
