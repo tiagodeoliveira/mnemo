@@ -42,7 +42,7 @@ type anthropicResp struct {
 
 func (a *Anthropic) Complete(ctx context.Context, in CompleteRequest) (CompleteResponse, error) {
 	if a.HTTP == nil {
-		a.HTTP = &http.Client{Timeout: 90 * time.Second}
+		a.HTTP = &http.Client{Timeout: 300 * time.Second}
 	}
 	endpoint := a.Endpoint
 	if endpoint == "" {
@@ -81,7 +81,12 @@ func (a *Anthropic) Complete(ctx context.Context, in CompleteRequest) (CompleteR
 	}
 	var parsed anthropicResp
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return CompleteResponse{}, fmt.Errorf("anthropic: decode: %w (body=%s)", err, string(raw))
+		preview := string(raw)
+		if len(preview) > 500 {
+			preview = preview[:500] + "…"
+		}
+		return CompleteResponse{}, fmt.Errorf("anthropic: decode (status=%d ct=%q): %w (body=%q)",
+			resp.StatusCode, resp.Header.Get("content-type"), err, preview)
 	}
 	out := CompleteResponse{
 		StopReason: parsed.StopReason,

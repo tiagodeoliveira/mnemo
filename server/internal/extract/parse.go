@@ -11,24 +11,30 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
-// ProjectTaskLog mirrors the TS ExtractionResult parsed from the custom
-// TASK:/FACTS:/DAILY: format. See infra/lambda/context-extractor/index.ts:200-221.
+// ProjectTaskLog holds the structured output of the classifier prompt.
+// Project- and task-shaped facts are split so the same content isn't written
+// to two namespaces.
 type ProjectTaskLog struct {
-	TaskDomain string // sanitized lower-snake-case; "unknown" if missing, "general" if outside allowed list
-	Facts      string // multi-line text; "" if NONE or absent
-	Daily      string // multi-line text; "" if NONE or absent
+	TaskDomain   string // sanitized lower-snake-case; "unknown" if missing, "general" if outside allowed list
+	ProjectFacts string // multi-line text; "" if NONE or absent
+	TaskFacts    string // multi-line text; "" if NONE or absent
+	Daily        string // multi-line text; "" if NONE or absent
 }
 
 // AllowedDomains is the canonical task-domain list. Mirrors getTaskDomains() in the TS.
 var AllowedDomains = []string{"coding", "studying", "meeting", "general"}
 
 var taskRE = regexp.MustCompile(`(?im)^TASK:\s*(.+)$`)
-var factsRE = regexp.MustCompile(`(?im)^FACTS:\s*\n([\s\S]*?)\nDAILY:`)
+var projectFactsRE = regexp.MustCompile(`(?im)^PROJECT_FACTS:\s*\n([\s\S]*?)\nTASK_FACTS:`)
+var taskFactsRE = regexp.MustCompile(`(?im)^TASK_FACTS:\s*\n([\s\S]*?)\nDAILY:`)
+// Legacy single-bucket FACTS layout (pre-split) — supported for backward
+// compatibility when an older prompt response sneaks through.
+var legacyFactsRE = regexp.MustCompile(`(?im)^FACTS:\s*\n([\s\S]*?)\nDAILY:`)
 var dailyRE = regexp.MustCompile(`(?im)^DAILY:\s*\n?([\s\S]*)$`)
 
-// ParseProjectTaskLog parses the custom format from the project/task/daily-log prompt.
+// ParseProjectTaskLog parses the custom format from the classifier prompt.
 // Returns the zero-value struct + an error if the TASK line is missing.
-// "NONE" or empty body in FACTS/DAILY is normalized to "".
+// "NONE" or empty body in any facts/daily block is normalized to "".
 func ParseProjectTaskLog(text string) (ProjectTaskLog, error) {
 	out := ProjectTaskLog{TaskDomain: "unknown"}
 	tm := taskRE.FindStringSubmatch(text)
@@ -37,15 +43,27 @@ func ParseProjectTaskLog(text string) (ProjectTaskLog, error) {
 	}
 	out.TaskDomain = sanitizeDomain(strings.TrimSpace(tm[1]))
 
-	if fm := factsRE.FindStringSubmatch(text); len(fm) >= 2 {
-		s := strings.TrimSpace(fm[1])
-		if !isNone(s) {
-			out.Facts = s
+	if fm := projectFactsRE.FindStringSubmatch(text); len(fm) >= 2 {
+		if s := strings.TrimSpace(fm[1]); !isNone(s) {
+			out.ProjectFacts = s
+		}
+	}
+	if fm := taskFactsRE.FindStringSubmatch(text); len(fm) >= 2 {
+		if s := strings.TrimSpace(fm[1]); !isNone(s) {
+			out.TaskFacts = s
+		}
+	}
+	// If the model emitted legacy FACTS:, fall back to task-bucket so we don't
+	// silently drop content from older responses still in flight.
+	if out.ProjectFacts == "" && out.TaskFacts == "" {
+		if fm := legacyFactsRE.FindStringSubmatch(text); len(fm) >= 2 {
+			if s := strings.TrimSpace(fm[1]); !isNone(s) {
+				out.TaskFacts = s
+			}
 		}
 	}
 	if dm := dailyRE.FindStringSubmatch(text); len(dm) >= 2 {
-		s := strings.TrimSpace(dm[1])
-		if !isNone(s) {
+		if s := strings.TrimSpace(dm[1]); !isNone(s) {
 			out.Daily = s
 		}
 	}

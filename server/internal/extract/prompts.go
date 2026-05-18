@@ -4,9 +4,10 @@ package extract
 // Extractor prompts — produce candidate NewItem lists from a conversation.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// SystemExtractClassifier classifies the task domain and emits FACTS lines that
-// become NewItem candidates for /projects/.../ and /tasks/.../ namespaces in
-// handler.go. Output format: TASK:/FACTS:/DAILY: (parsed by parse.go).
+// SystemExtractClassifier classifies the task domain and emits two separate
+// fact streams that become NewItem candidates for /projects/.../ and /tasks/.../
+// namespaces in handler.go. Output format: TASK:/PROJECT_FACTS:/TASK_FACTS:/DAILY:
+// (parsed by parse.go).
 //
 // Two %s placeholders (same as before):
 //   %s[0] — optional known-context block (project name / workdir)
@@ -17,14 +18,22 @@ const SystemExtractClassifier = `You are analyzing a conversation to extract dur
 %s
    If unclear, use "general". If too short to classify, output "unknown".
 
-2. EXTRACT KEY INSIGHTS: Distill the conversation into facts that will still be relevant weeks from now. Focus on the "why" behind decisions, not the "what" of implementation steps. A good fact reads like a design doc, not a commit log. If nothing is worth remembering long-term, output NONE.
+2. EXTRACT TWO KINDS OF INSIGHTS:
+
+   PROJECT_FACTS — architectural truths about THIS specific codebase: components, services, deployment topology, schemas, naming conventions, the "why" behind structural decisions. Anything that would only be true for this project. If no project context, output NONE.
+
+   TASK_FACTS — general patterns, lessons, anti-patterns, and reusable techniques tied to the task domain (coding, studying, meeting, general). Things that would be true even if applied to a different project. If nothing generalizable surfaced, output NONE.
+
+   A fact belongs in exactly one bucket. If a fact is genuinely both, prefer PROJECT_FACTS. Skip facts that are commit-log noise (what was changed, in what file, by which command).
 
 3. WRITE A DAILY LOG ENTRY: A detailed paragraph covering what was worked on, decisions made, problems encountered and how they were resolved, tools and technologies used, and any notable learnings. Be comprehensive — this will be consolidated into a daily digest later. Write 3-8 sentences.
 
 Respond in this exact format:
 TASK: <task_domain>
-FACTS:
-<one fact per line, or NONE if nothing meaningful>
+PROJECT_FACTS:
+<one fact per line, or NONE>
+TASK_FACTS:
+<one fact per line, or NONE>
 DAILY:
 <3-8 sentence detailed log entry, or NONE if nothing meaningful>`
 

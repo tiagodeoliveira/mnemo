@@ -149,10 +149,11 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return err
 	}
 
-	// Build NewItem slices per dimension.
+	// Build NewItem slices per dimension. The classifier emits PROJECT_FACTS
+	// and TASK_FACTS as separate buckets so the same line never lands in both.
 	var projectItems []NewItem
-	if projectName != "" && !isNone(ptl.Facts) && ptl.Facts != "" {
-		for _, line := range strings.Split(ptl.Facts, "\n") {
+	if projectName != "" && ptl.ProjectFacts != "" {
+		for _, line := range strings.Split(ptl.ProjectFacts, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || isNone(line) {
 				continue
@@ -162,8 +163,8 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	}
 
 	var taskItems []NewItem
-	if ptl.TaskDomain != "unknown" && !isNone(ptl.Facts) && ptl.Facts != "" {
-		for _, line := range strings.Split(ptl.Facts, "\n") {
+	if ptl.TaskDomain != "unknown" && ptl.TaskFacts != "" {
+		for _, line := range strings.Split(ptl.TaskFacts, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || isNone(line) {
 				continue

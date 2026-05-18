@@ -105,7 +105,7 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Check if semantic search is requested via ?q=
 	queryText := q.Get("q")
 	if queryText != "" {
-		h.serveSemanticRecall(w, r, ctx, actor, reqs, queryText, q.Get("min_similarity"))
+		h.serveSemanticRecall(w, r, ctx, actor, reqs, queryText, q.Get("min_similarity"), limit)
 		return
 	}
 
@@ -150,6 +150,11 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 
+// defaultSemanticMinSimilarity is applied when the caller passes ?q= without
+// an explicit min_similarity. Embedding scores below ~0.20 are essentially
+// random topical noise in this corpus, and dropping them keeps recall focused.
+const defaultSemanticMinSimilarity float32 = 0.20
+
 // serveSemanticRecall handles ?q= queries: embeds the query and uses cosine
 // similarity ordering within each requested dimension/namespace.
 func (h *recallHandler) serveSemanticRecall(
@@ -160,6 +165,7 @@ func (h *recallHandler) serveSemanticRecall(
 	reqs []dimReq,
 	queryText string,
 	minSimilarityStr string,
+	limit int,
 ) {
 	if h.embedDisabled || h.embedClient == nil {
 		http.Error(w, "semantic search disabled (q param requires embeddings)", http.StatusServiceUnavailable)
@@ -173,12 +179,17 @@ func (h *recallHandler) serveSemanticRecall(
 	}
 	queryEmbedding := emb.Vectors[0]
 
-	var minSim float32
+	minSim := defaultSemanticMinSimilarity
 	if minSimilarityStr != "" {
 		var f float64
 		if _, err := fmt.Sscanf(minSimilarityStr, "%f", &f); err == nil {
 			minSim = float32(f)
 		}
+	}
+
+	semanticLimit := limit
+	if semanticLimit <= 0 {
+		semanticLimit = 100
 	}
 
 	results := make([]dimGroup, len(reqs))
@@ -193,7 +204,7 @@ func (h *recallHandler) serveSemanticRecall(
 				QueryEmbedding:  queryEmbedding,
 				Dimensions:      []string{rq.dim},
 				NamespacePrefix: rq.prefix,
-				Limit:           100,
+				Limit:           semanticLimit,
 				MinSimilarity:   minSim,
 			})
 			if err != nil {

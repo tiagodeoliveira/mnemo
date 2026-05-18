@@ -24,7 +24,7 @@ func stubConsolidationLLM() *llm.Stub {
 		// Extractor calls (via user message, no system prompt differentiator):
 		switch {
 		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
-			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
+			return llm.CompleteResponse{Text: "TASK: coding\nPROJECT_FACTS:\nUses Go for backend services.\nTASK_FACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
 		case strings.Contains(user, "extracting biographical"):
 			return llm.CompleteResponse{Text: "ABOUT:\ntiago is a senior engineer."}, nil
 		}
@@ -203,7 +203,7 @@ func TestExtractHandlerReinforcementOnSecondEvent(t *testing.T) {
 		}
 		switch {
 		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
-			return llm.CompleteResponse{Text: "TASK: coding\nFACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
+			return llm.CompleteResponse{Text: "TASK: coding\nPROJECT_FACTS:\nUses Go for backend services.\nTASK_FACTS:\nUses Go for backend services.\nDAILY:\nDiscussed Go preferences."}, nil
 		case strings.Contains(user, "extracting biographical"):
 			return llm.CompleteResponse{Text: "ABOUT:\nNONE"}, nil
 		}

@@ -12,6 +12,12 @@ import (
 	"github.com/tiagodeoliveira/mnemo/server/internal/store"
 )
 
+// jobTimeout bounds a single handler invocation. Picked to comfortably cover
+// extract_context, which fans out ~4 parallel LLM calls and then runs up to 4
+// sequential consolidation calls — each with a 300s HTTP timeout. A hung
+// handler is much worse than a slow one, so we want a real ceiling.
+const jobTimeout = 10 * time.Minute
+
 // retryDBOp runs op up to 3 times with exponential backoff (500ms/1s/2s).
 // Respects ctx cancellation.
 func retryDBOp(ctx context.Context, op func() error) error {
@@ -123,7 +129,9 @@ func (p *Pool) loop(ctx context.Context, id string) {
 			continue
 		}
 		stopHB := p.heartbeat(ctx, j.JobID)
-		err = h(ctx, j.Payload)
+		jobCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+		err = h(jobCtx, j.Payload)
+		cancel()
 		stopHB()
 
 		if err != nil {
