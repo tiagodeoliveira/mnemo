@@ -1,6 +1,7 @@
 package extract
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -148,19 +149,34 @@ func ParseAbout(s string) []NewItem {
 	return out
 }
 
+// stringOrNumber accepts both "1" and 1 from the LLM. Refs are rendered as
+// bare integers in the prompt body, so the model often produces JSON numbers
+// even when the schema example uses strings.
+type stringOrNumber string
+
+func (s *stringOrNumber) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) >= 2 && b[0] == '"' && b[len(b)-1] == '"' {
+		*s = stringOrNumber(b[1 : len(b)-1])
+		return nil
+	}
+	*s = stringOrNumber(string(b))
+	return nil
+}
+
 // rawUpdateOp is the intermediate JSON representation for an update op before UUID parsing.
 type rawUpdateOp struct {
-	ID      string   `json:"id"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
+	ID      stringOrNumber `json:"id"`
+	Content string         `json:"content"`
+	Tags    []string       `json:"tags"`
 }
 
 // rawDiff is the intermediate JSON representation before UUID parsing.
 type rawDiffFull struct {
-	Keep      []string      `json:"keep"`
-	Reinforce []string      `json:"reinforce"`
-	Delete    []string      `json:"delete"`
-	Update    []rawUpdateOp `json:"update"`
+	Keep      []stringOrNumber `json:"keep"`
+	Reinforce []stringOrNumber `json:"reinforce"`
+	Delete    []stringOrNumber `json:"delete"`
+	Update    []rawUpdateOp    `json:"update"`
 	Insert    []store.InsertOp `json:"insert"`
 }
 
@@ -204,10 +220,10 @@ func ParseDiffWithRefs(text string, refs map[string]uuid.UUID) (store.MemoryDiff
 		return id, nil
 	}
 
-	parseIDs := func(ss []string, label string) ([]uuid.UUID, error) {
+	parseIDs := func(ss []stringOrNumber, label string) ([]uuid.UUID, error) {
 		out := make([]uuid.UUID, 0, len(ss))
 		for _, s := range ss {
-			id, err := parseID(s, label)
+			id, err := parseID(string(s), label)
 			if err != nil {
 				return nil, err
 			}
@@ -231,7 +247,7 @@ func ParseDiffWithRefs(text string, refs map[string]uuid.UUID) (store.MemoryDiff
 
 	updates := make([]store.UpdateOp, 0, len(r.Update))
 	for _, u := range r.Update {
-		id, err := parseID(u.ID, "update")
+		id, err := parseID(string(u.ID), "update")
 		if err != nil {
 			return store.MemoryDiff{}, err
 		}

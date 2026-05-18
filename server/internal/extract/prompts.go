@@ -122,7 +122,7 @@ DIFF SCHEMA — return exactly this JSON object, no other text:
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
 
-Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
+Refs are the values shown beside each existing item (e.g. ref: 1, ref: 2). Emit them as JSON STRINGS ("1", "2"), never as bare numbers. Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
@@ -161,7 +161,7 @@ DIFF SCHEMA — return exactly this JSON object, no other text:
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
 
-Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
+Refs are the values shown beside each existing item (e.g. ref: 1, ref: 2). Emit them as JSON STRINGS ("1", "2"), never as bare numbers. Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
@@ -201,7 +201,7 @@ DIFF SCHEMA — return exactly this JSON object, no other text:
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
 
-Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
+Refs are the values shown beside each existing item (e.g. ref: 1, ref: 2). Emit them as JSON STRINGS ("1", "2"), never as bare numbers. Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
@@ -241,7 +241,7 @@ DIFF SCHEMA — return exactly this JSON object, no other text:
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
 
-Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
+Refs are the values shown beside each existing item (e.g. ref: 1, ref: 2). Emit them as JSON STRINGS ("1", "2"), never as bare numbers. Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
