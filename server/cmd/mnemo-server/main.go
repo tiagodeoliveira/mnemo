@@ -77,11 +77,26 @@ func main() {
 		rawLlm = &llm.Stub{}
 		logger.Warn("MNEMO_LLM_DISABLED=1: using stub LLM")
 	} else {
-		if cfg.AnthropicAPIKey == "" {
-			logger.Error("ANTHROPIC_API_KEY required when MNEMO_LLM_DISABLED is not set")
+		providers, err := buildLLMProviders(cfg)
+		if err != nil {
+			logger.Error("llm providers", "err", err)
 			os.Exit(7)
 		}
-		rawLlm = &llm.Anthropic{APIKey: cfg.AnthropicAPIKey}
+		if len(providers) == 1 {
+			rawLlm = providers[0].Client
+			logger.Info("LLM provider", "name", providers[0].Name, "model", providers[0].Model)
+		} else {
+			cooldown := time.Duration(cfg.LLMBreakerCooldownS) * time.Second
+			rawLlm = llm.NewChain(providers, cfg.LLMBreakerThreshold, cooldown, logger)
+			names := make([]string, len(providers))
+			for i, p := range providers {
+				names[i] = p.Name
+			}
+			logger.Info("LLM provider chain",
+				"order", names,
+				"breaker_threshold", cfg.LLMBreakerThreshold,
+				"breaker_cooldown", cooldown)
+		}
 	}
 	// Wrap with concurrency throttle.
 	llmClient := llm.NewThrottled(rawLlm, cfg.LLMMaxConcurrent)
@@ -234,4 +249,32 @@ func healthzExit() {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// buildLLMProviders materializes cfg.LLMProviders into a chain. The list is
+// validated at config load, so we only need to map name → constructed Client.
+func buildLLMProviders(cfg config.Config) ([]llm.Provider, error) {
+	if len(cfg.LLMProviders) == 0 {
+		return nil, errors.New("no LLM providers configured")
+	}
+	out := make([]llm.Provider, 0, len(cfg.LLMProviders))
+	for _, name := range cfg.LLMProviders {
+		switch name {
+		case "anthropic":
+			out = append(out, llm.Provider{
+				Name:   "anthropic",
+				Client: &llm.Anthropic{APIKey: cfg.AnthropicAPIKey},
+				Model:  cfg.LLMModel,
+			})
+		case "openai":
+			out = append(out, llm.Provider{
+				Name:   "openai",
+				Client: &llm.OpenAI{APIKey: cfg.OpenAIAPIKey},
+				Model:  cfg.OpenAILLMModel,
+			})
+		default:
+			return nil, errors.New("unknown LLM provider: " + name)
+		}
+	}
+	return out, nil
 }

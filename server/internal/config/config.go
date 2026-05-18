@@ -15,10 +15,21 @@ type Config struct {
 	Auth0Domain   string `env:"AUTH0_DOMAIN"`
 	Auth0Audience string `env:"AUTH0_API_AUDIENCE"`
 
-	LLMDisabled      bool   `env:"MNEMO_LLM_DISABLED"`
-	AnthropicAPIKey  string `env:"ANTHROPIC_API_KEY"`
-	LLMModel         string `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
-	LLMMaxConcurrent int    `env:"MNEMO_LLM_MAX_CONCURRENT" envDefault:"4"`
+	LLMDisabled      bool     `env:"MNEMO_LLM_DISABLED"`
+	AnthropicAPIKey  string   `env:"ANTHROPIC_API_KEY"`
+	LLMModel         string   `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
+	LLMMaxConcurrent int      `env:"MNEMO_LLM_MAX_CONCURRENT" envDefault:"4"`
+	// LLMProviders is the failover order. The first provider in the list is
+	// primary; subsequent ones are tried in order when the primary's breaker
+	// trips or each call errors. Default keeps single-provider behavior.
+	LLMProviders     []string `env:"MNEMO_LLM_PROVIDERS" envSeparator:"," envDefault:"anthropic"`
+	OpenAILLMModel   string   `env:"MNEMO_OPENAI_LLM_MODEL" envDefault:"gpt-4o-mini"`
+	// LLMBreakerThreshold and LLMBreakerCooldown tune the per-provider circuit
+	// breaker inside the chain. 5 consecutive failures over a 60s window is
+	// the empirical sweet spot — long enough to ride out Anthropic 529 bursts,
+	// short enough to swap to OpenAI on a real outage.
+	LLMBreakerThreshold int `env:"MNEMO_LLM_BREAKER_THRESHOLD" envDefault:"5"`
+	LLMBreakerCooldownS int `env:"MNEMO_LLM_BREAKER_COOLDOWN_SECONDS" envDefault:"60"`
 
 	EmbedDisabled bool   `env:"MNEMO_EMBED_DISABLED"`
 	EmbedModel    string `env:"MNEMO_EMBED_MODEL" envDefault:"text-embedding-3-small"`
@@ -42,6 +53,22 @@ func Load() (Config, error) {
 	}
 	if !c.EmbedDisabled && c.OpenAIAPIKey == "" {
 		return c, fmt.Errorf("config: OPENAI_API_KEY required when MNEMO_EMBED_DISABLED is not set")
+	}
+	if !c.LLMDisabled {
+		for _, p := range c.LLMProviders {
+			switch p {
+			case "anthropic":
+				if c.AnthropicAPIKey == "" {
+					return c, fmt.Errorf("config: anthropic in MNEMO_LLM_PROVIDERS requires ANTHROPIC_API_KEY")
+				}
+			case "openai":
+				if c.OpenAIAPIKey == "" {
+					return c, fmt.Errorf("config: openai in MNEMO_LLM_PROVIDERS requires OPENAI_API_KEY")
+				}
+			default:
+				return c, fmt.Errorf("config: unknown LLM provider %q (supported: anthropic, openai)", p)
+			}
+		}
 	}
 	return c, nil
 }
