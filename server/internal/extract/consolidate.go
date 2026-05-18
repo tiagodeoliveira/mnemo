@@ -78,7 +78,7 @@ func ConsolidateItems(
 	incoming []NewItem,
 ) (ConsolidateResult, error) {
 	systemPrompt := buildSystemPrompt(kind, cctx)
-	userMsg := buildUserMessage(cctx.Today, existing, incoming)
+	userMsg, refs := buildUserMessage(cctx.Today, existing, incoming)
 
 	raw, truncated, err := callLLM(ctx, cli, model, systemPrompt, userMsg)
 	if err != nil {
@@ -88,7 +88,7 @@ func ConsolidateItems(
 		return ConsolidateResult{}, &ConsolidationDiffError{Msg: "LLM hit max_tokens on consolidation"}
 	}
 
-	diff, perr := ParseDiff(raw)
+	diff, perr := ParseDiffWithRefs(raw, refs)
 	if perr != nil {
 		// JSON parse failure — degrade to insert-only.
 		slog.Warn("consolidation diff parse failed, degrading to insert-only",
@@ -104,7 +104,7 @@ func callLLM(ctx context.Context, cli llm.Client, model, system, userMsg string)
 		Model:     model,
 		System:    system,
 		Messages:  []llm.Message{{Role: "user", Content: userMsg}},
-		MaxTokens: 4096,
+		MaxTokens: 8192,
 	})
 	if err != nil {
 		return "", false, err
@@ -136,21 +136,30 @@ func buildSystemPrompt(kind ConsolidationKind, cctx ConsolidationContext) string
 	}
 }
 
-func buildUserMessage(today string, existing []ItemRef, incoming []NewItem) string {
+// buildUserMessage emits the consolidation prompt body with ordinal refs in
+// place of UUIDs ("ref: 1", "ref: 2", …). The returned map translates the
+// LLM's refs back to UUIDs at parse time. Ordinals are used because Claude/
+// GPT routinely typo 36-char UUIDs (dropped char, missing dash) — single-
+// digit refs are nearly impossible to corrupt and cost ~30 fewer tokens
+// per item across input and output.
+func buildUserMessage(today string, existing []ItemRef, incoming []NewItem) (string, map[string]uuid.UUID) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Today's date: %s\n\n", today)
 
+	refs := make(map[string]uuid.UUID, len(existing))
 	b.WriteString("EXISTING ITEMS:\n")
 	if len(existing) == 0 {
 		b.WriteString("(none)\n")
 	} else {
-		for _, it := range existing {
+		for i, it := range existing {
+			ref := fmt.Sprintf("%d", i+1)
+			refs[ref] = it.ID
 			tags := strings.Join(it.Tags, ", ")
 			if tags == "" {
 				tags = "(none)"
 			}
-			fmt.Fprintf(&b, "[id: %s, created: %s, last_reinforced: %s, count: %d, tags: [%s]]\n%s\n\n",
-				it.ID, it.CreatedAt, it.LastReinforced, it.ReinforcedCount, tags, it.Content)
+			fmt.Fprintf(&b, "[ref: %s, created: %s, last_reinforced: %s, count: %d, tags: [%s]]\n%s\n\n",
+				ref, it.CreatedAt, it.LastReinforced, it.ReinforcedCount, tags, it.Content)
 		}
 	}
 
@@ -167,7 +176,7 @@ func buildUserMessage(today string, existing []ItemRef, incoming []NewItem) stri
 		}
 	}
 
-	return strings.TrimRight(b.String(), "\n")
+	return strings.TrimRight(b.String(), "\n"), refs
 }
 
 func validateDiff(d store.MemoryDiff, existing []ItemRef) error {

@@ -242,15 +242,21 @@ func TestBuildUserMessageExistingAndIncoming(t *testing.T) {
 		ReinforcedCount: 5,
 	}}
 	incoming := []NewItem{{Content: "likes Rust", Tags: []string{"language"}}}
-	msg := buildUserMessage("2026-05-14", existing, incoming)
-	if !strings.Contains(msg, id.String()) {
-		t.Error("user message missing existing item ID")
+	msg, refs := buildUserMessage("2026-05-14", existing, incoming)
+	if !strings.Contains(msg, "ref: 1") {
+		t.Error("user message missing ordinal ref for existing item")
+	}
+	if strings.Contains(msg, id.String()) {
+		t.Error("user message must not leak full UUID — LLM corrupts them")
 	}
 	if !strings.Contains(msg, "uses Go") {
 		t.Error("user message missing existing item content")
 	}
 	if !strings.Contains(msg, "likes Rust") {
 		t.Error("user message missing incoming item content")
+	}
+	if refs["1"] != id {
+		t.Errorf("refs[\"1\"] = %s, want %s", refs["1"], id)
 	}
 }
 

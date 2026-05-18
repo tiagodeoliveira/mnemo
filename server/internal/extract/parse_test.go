@@ -1,6 +1,10 @@
 package extract
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/uuid"
+)
 
 func TestParseProjectTaskLogHappyPath(t *testing.T) {
 	in := "TASK: coding\n" +
@@ -67,6 +71,30 @@ func TestParsePreferencesStripsCodeFence(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if len(got.Preferences) != 1 || got.Preferences[0] != "use Go" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestParseDiffWithRefsTranslatesOrdinals(t *testing.T) {
+	id1, _ := uuid.Parse("11111111-1111-1111-1111-111111111111")
+	id2, _ := uuid.Parse("22222222-2222-2222-2222-222222222222")
+	refs := map[string]uuid.UUID{"1": id1, "2": id2}
+	in := `{"keep":["1"],"reinforce":[],"delete":[],"update":[{"id":"2","content":"x","tags":["t"]}],"insert":[]}`
+	d, err := ParseDiffWithRefs(in, refs)
+	if err != nil { t.Fatal(err) }
+	if len(d.Keep) != 1 || d.Keep[0] != id1 {
+		t.Errorf("keep: %v", d.Keep)
+	}
+	if len(d.Update) != 1 || d.Update[0].ID != id2 {
+		t.Errorf("update: %v", d.Update)
+	}
+}
+
+func TestParseDiffWithRefsRejectsUnknownRef(t *testing.T) {
+	// Without a map entry for "99", neither ref lookup nor UUID parse succeeds.
+	refs := map[string]uuid.UUID{"1": uuid.New()}
+	in := `{"keep":["99"],"reinforce":[],"delete":[],"update":[],"insert":[]}`
+	if _, err := ParseDiffWithRefs(in, refs); err == nil {
+		t.Fatal("expected error on unknown ref")
 	}
 }
 

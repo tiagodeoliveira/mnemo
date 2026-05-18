@@ -165,8 +165,15 @@ type rawDiffFull struct {
 }
 
 // ParseDiff strips code fences, parses the JSON diff produced by a
-// consolidation prompt, and converts string IDs to uuid.UUID.
+// consolidation prompt, and converts string IDs to uuid.UUID. IDs in the
+// diff may be either canonical UUIDs OR ordinal refs ("1", "2", …) when a
+// non-nil refs map is provided — refs are the on-wire format used by
+// consolidation today because LLMs reliably corrupt 36-char UUIDs.
 func ParseDiff(text string) (store.MemoryDiff, error) {
+	return ParseDiffWithRefs(text, nil)
+}
+
+func ParseDiffWithRefs(text string, refs map[string]uuid.UUID) (store.MemoryDiff, error) {
 	text = strings.TrimSpace(text)
 	text = strings.TrimPrefix(text, "```json")
 	text = strings.TrimPrefix(text, "```")
@@ -181,12 +188,28 @@ func ParseDiff(text string) (store.MemoryDiff, error) {
 		return store.MemoryDiff{}, fmt.Errorf("ParseDiff: %w", err)
 	}
 
+	parseID := func(s, label string) (uuid.UUID, error) {
+		s = strings.TrimSpace(s)
+		if refs != nil {
+			if id, ok := refs[s]; ok {
+				return id, nil
+			}
+			// Fall through to UUID parse — some prompts may still emit a UUID
+			// for the rare case where the model echoes one back.
+		}
+		id, err := uuid.Parse(s)
+		if err != nil {
+			return uuid.Nil, fmt.Errorf("ParseDiff: invalid ID in %s %q: %w", label, s, err)
+		}
+		return id, nil
+	}
+
 	parseIDs := func(ss []string, label string) ([]uuid.UUID, error) {
 		out := make([]uuid.UUID, 0, len(ss))
 		for _, s := range ss {
-			id, err := uuid.Parse(strings.TrimSpace(s))
+			id, err := parseID(s, label)
 			if err != nil {
-				return nil, fmt.Errorf("ParseDiff: invalid UUID in %s %q: %w", label, s, err)
+				return nil, err
 			}
 			out = append(out, id)
 		}
@@ -208,9 +231,9 @@ func ParseDiff(text string) (store.MemoryDiff, error) {
 
 	updates := make([]store.UpdateOp, 0, len(r.Update))
 	for _, u := range r.Update {
-		id, err := uuid.Parse(strings.TrimSpace(u.ID))
+		id, err := parseID(u.ID, "update")
 		if err != nil {
-			return store.MemoryDiff{}, fmt.Errorf("ParseDiff: invalid UUID in update %q: %w", u.ID, err)
+			return store.MemoryDiff{}, err
 		}
 		updates = append(updates, store.UpdateOp{ID: id, Content: u.Content, Tags: u.Tags})
 	}

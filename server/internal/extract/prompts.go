@@ -115,22 +115,24 @@ CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
 
 DIFF SCHEMA — return exactly this JSON object, no other text:
 {
-  "keep":      ["<uuid>", ...],
-  "reinforce": ["<uuid>", ...],
-  "delete":    ["<uuid>", ...],
-  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "keep":      ["<ref>", ...],
+  "reinforce": ["<ref>", ...],
+  "delete":    ["<ref>", ...],
+  "update":    [{"id": "<ref>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
+
+Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
 - reinforce: item is still true; bump its freshness date and reinforcement count
 - delete: item is no longer true or is superseded; hard-delete it
-- update: revise content and/or tags; keep the same UUID row
+- update: revise content and/or tags; keep the same ref row
 - insert: brand-new item not present in existing items
 
 RULES:
-1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+1. Every existing item ref MUST appear in exactly one of: keep, reinforce, delete, update[].id
 2. Every insert must have non-empty content after trimming whitespace
 3. Each item must be a single concise statement (one line, no sub-bullets)
 4. Tags must be drawn from the controlled vocabulary above
@@ -152,22 +154,24 @@ CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
 
 DIFF SCHEMA — return exactly this JSON object, no other text:
 {
-  "keep":      ["<uuid>", ...],
-  "reinforce": ["<uuid>", ...],
-  "delete":    ["<uuid>", ...],
-  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "keep":      ["<ref>", ...],
+  "reinforce": ["<ref>", ...],
+  "delete":    ["<ref>", ...],
+  "update":    [{"id": "<ref>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
+
+Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
 - reinforce: item is still true; bump its freshness date and reinforcement count
 - delete: item is no longer true or is explicitly contradicted by new content
-- update: revise content and/or tags; keep the same UUID row
+- update: revise content and/or tags; keep the same ref row
 - insert: brand-new biographical fact not present in existing items
 
 RULES:
-1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+1. Every existing item ref MUST appear in exactly one of: keep, reinforce, delete, update[].id
 2. Every insert must have non-empty content after trimming whitespace
 3. Each item must be a single concise factual statement
 4. Tags must be drawn from the controlled vocabulary above
@@ -190,22 +194,24 @@ CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
 
 DIFF SCHEMA — return exactly this JSON object, no other text:
 {
-  "keep":      ["<uuid>", ...],
-  "reinforce": ["<uuid>", ...],
-  "delete":    ["<uuid>", ...],
-  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "keep":      ["<ref>", ...],
+  "reinforce": ["<ref>", ...],
+  "delete":    ["<ref>", ...],
+  "update":    [{"id": "<ref>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
+
+Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
 - reinforce: item is still true; bump its freshness date and reinforcement count
 - delete: item is superseded by a new decision or no longer applicable
-- update: revise content and/or tags; keep the same UUID row
+- update: revise content and/or tags; keep the same ref row
 - insert: brand-new project fact not present in existing items
 
 RULES:
-1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+1. Every existing item ref MUST appear in exactly one of: keep, reinforce, delete, update[].id
 2. Every insert must have non-empty content after trimming whitespace
 3. Each item must be a single concise statement
 4. Tags must be drawn from the controlled vocabulary above
@@ -228,22 +234,24 @@ CONTROLLED TAG VOCABULARY (use only these tags, pick 1-3 per item):
 
 DIFF SCHEMA — return exactly this JSON object, no other text:
 {
-  "keep":      ["<uuid>", ...],
-  "reinforce": ["<uuid>", ...],
-  "delete":    ["<uuid>", ...],
-  "update":    [{"id": "<uuid>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
+  "keep":      ["<ref>", ...],
+  "reinforce": ["<ref>", ...],
+  "delete":    ["<ref>", ...],
+  "update":    [{"id": "<ref>", "content": "<string>", "tags": ["<tag>", ...]}, ...],
   "insert":    [{"content": "<string>", "tags": ["<tag>", ...]}]
 }
+
+Use the ref values shown beside each existing item ("ref: 1", "ref: 2", …). Never invent refs; only those that appear in EXISTING ITEMS are valid.
 
 OPERATION SEMANTICS:
 - keep: item remains exactly as-is (content, tags, dates all unchanged)
 - reinforce: item is still true; bump its freshness date and reinforcement count
 - delete: item is outdated or superseded
-- update: revise content and/or tags; keep the same UUID row
+- update: revise content and/or tags; keep the same ref row
 - insert: brand-new task insight not present in existing items
 
 RULES:
-1. Every existing item MUST appear in exactly one of: keep, reinforce, delete, update[].id
+1. Every existing item ref MUST appear in exactly one of: keep, reinforce, delete, update[].id
 2. Every insert must have non-empty content after trimming whitespace
 3. Each item must be a single concise statement (one line)
 4. Tags must be drawn from the controlled vocabulary above
