@@ -190,21 +190,18 @@ async function pushToMnemo(detail) {
   if (turns.length === 0) return { skipped: 'empty' };
 
   const sessionId = sanitizeSessionId(detail.conversationId || `${detail.site}:${hash(detail.url)}`);
-  const now = new Date(detail.capturedAt || Date.now());
 
+  // Wire-shape mirrors cli/src/commands/push.ts — flat snake_case keys,
+  // attributes is a flat object (not a wrapped `context`).
   const body = {
-    sessionId,
+    session_id: sessionId,
     turns,
-    context: {
-      workstation: cfg.workstation || 'chrome-extension',
-      workdir: detail.url || `https://${detail.site}/`,
-      timestamp: now.toISOString(),
-      date: localDate(now),
-      source: 'chrome-extension',
-      attributes: {
-        site: detail.site || 'unknown',
-        kind: detail.kind || 'unknown',
-      },
+    source: 'chrome-extension',
+    workstation: cfg.workstation || 'chrome-extension',
+    workdir: detail.url || `https://${detail.site}/`,
+    attributes: {
+      site: detail.site || 'unknown',
+      kind: detail.kind || 'unknown',
     },
   };
 
@@ -241,12 +238,6 @@ function sanitizeSessionId(s) {
   // Bedrock AgentCore sessionId allows only [a-zA-Z0-9_-]; '.' and ':' get rejected.
   const cleaned = String(s).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 256);
   return cleaned || 'unknown';
-}
-function localDate(d) {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
 }
 function hash(s) {
   let h = 0;
