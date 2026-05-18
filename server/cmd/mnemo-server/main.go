@@ -73,6 +73,11 @@ func main() {
 
 	// LLM client construction.
 	var rawLlm llm.Client
+	// primaryModel is the model handlers pass via CompleteRequest.Model. In the
+	// single-provider case it's the only model. In chain mode the Chain swaps
+	// it per provider, but we still seed it with the primary's so a chain-less
+	// fallback would behave the same.
+	var primaryModel string
 	if cfg.LLMDisabled {
 		rawLlm = &llm.Stub{}
 		logger.Warn("MNEMO_LLM_DISABLED=1: using stub LLM")
@@ -82,6 +87,7 @@ func main() {
 			logger.Error("llm providers", "err", err)
 			os.Exit(7)
 		}
+		primaryModel = providers[0].Model
 		if len(providers) == 1 {
 			rawLlm = providers[0].Client
 			logger.Info("LLM provider", "name", providers[0].Name, "model", providers[0].Model)
@@ -114,11 +120,11 @@ func main() {
 	}
 
 	extractHandler := &extract.Handler{
-		Store: s, LLM: llmClient, Model: cfg.LLMModel,
+		Store: s, LLM: llmClient, Model: primaryModel,
 		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
 	}
 	meetingHandler := &meeting.Handler{
-		Store: s, LLM: llmClient, Model: cfg.LLMModel,
+		Store: s, LLM: llmClient, Model: primaryModel,
 		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
 	}
 	mailer := &digest.Mailer{
@@ -128,7 +134,7 @@ func main() {
 		From: cfg.SMTPFrom,
 	}
 	digestHandler := &digest.Handler{
-		Store: s, LLM: llmClient, Model: cfg.LLMModel, Mailer: mailer,
+		Store: s, LLM: llmClient, Model: primaryModel, Mailer: mailer,
 		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
 	}
 	backfillHandler := &queue.BackfillEmbeddingsHandler{
@@ -264,13 +270,13 @@ func buildLLMProviders(cfg config.Config) ([]llm.Provider, error) {
 			out = append(out, llm.Provider{
 				Name:   "anthropic",
 				Client: &llm.Anthropic{APIKey: cfg.AnthropicAPIKey},
-				Model:  cfg.LLMModel,
+				Model:  cfg.AnthropicModel,
 			})
 		case "openai":
 			out = append(out, llm.Provider{
 				Name:   "openai",
 				Client: &llm.OpenAI{APIKey: cfg.OpenAIAPIKey},
-				Model:  cfg.OpenAILLMModel,
+				Model:  cfg.OpenAIModel,
 			})
 		default:
 			return nil, errors.New("unknown LLM provider: " + name)

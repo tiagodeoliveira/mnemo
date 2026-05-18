@@ -17,13 +17,13 @@ type Config struct {
 
 	LLMDisabled      bool     `env:"MNEMO_LLM_DISABLED"`
 	AnthropicAPIKey  string   `env:"ANTHROPIC_API_KEY"`
-	LLMModel         string   `env:"MNEMO_LLM_MODEL" envDefault:"claude-sonnet-4-6"`
+	AnthropicModel   string   `env:"MNEMO_ANTHROPIC_MODEL" envDefault:"claude-sonnet-4-6"`
+	OpenAIModel      string   `env:"MNEMO_OPENAI_MODEL" envDefault:"gpt-4o-mini"`
 	LLMMaxConcurrent int      `env:"MNEMO_LLM_MAX_CONCURRENT" envDefault:"4"`
 	// LLMProviders is the failover order. The first provider in the list is
 	// primary; subsequent ones are tried in order when the primary's breaker
 	// trips or each call errors. Default keeps single-provider behavior.
 	LLMProviders     []string `env:"MNEMO_LLM_PROVIDERS" envSeparator:"," envDefault:"anthropic"`
-	OpenAILLMModel   string   `env:"MNEMO_OPENAI_LLM_MODEL" envDefault:"gpt-4o-mini"`
 	// LLMBreakerThreshold and LLMBreakerCooldown tune the per-provider circuit
 	// breaker inside the chain. 5 consecutive failures over a 60s window is
 	// the empirical sweet spot — long enough to ride out Anthropic 529 bursts,
