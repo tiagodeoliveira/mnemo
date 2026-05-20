@@ -91,7 +91,7 @@ func (s *Store) ListItemsByNamespace(ctx context.Context, actorID, namespace str
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanMemories(rows)
 }
 
@@ -148,7 +148,6 @@ func (s *Store) ListItems(ctx context.Context, opts ListItemsOpts) ([]Memory, er
 	if opts.Until.Valid {
 		clauses = append(clauses, fmt.Sprintf("updated_at <= $%d", i))
 		args = append(args, opts.Until.Time)
-		i++
 	}
 
 	q := fmt.Sprintf(`
@@ -165,7 +164,7 @@ func (s *Store) ListItems(ctx context.Context, opts ListItemsOpts) ([]Memory, er
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanMemories(rows)
 }
 

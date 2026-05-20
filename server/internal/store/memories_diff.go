@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -376,15 +377,11 @@ func tagsToJSON(tags []string) []byte {
 	if len(tags) == 0 {
 		return []byte("[]")
 	}
-	out := []byte{'['}
-	for i, t := range tags {
-		if i > 0 {
-			out = append(out, ',')
-		}
-		out = append(out, '"')
-		out = append(out, []byte(t)...)
-		out = append(out, '"')
+	b, err := json.Marshal(tags)
+	if err != nil {
+		// Should never happen for []string, but fall back to empty array
+		// rather than producing invalid JSON.
+		return []byte("[]")
 	}
-	out = append(out, ']')
-	return out
+	return b
 }

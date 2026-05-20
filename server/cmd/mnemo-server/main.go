@@ -66,7 +66,7 @@ func main() {
 		logger.Error("store.Open", "err", err)
 		os.Exit(3)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Migrate(); err != nil {
 		logger.Error("migrate", "err", err)
@@ -229,6 +229,9 @@ func main() {
 			EmbedDisabled: cfg.EmbedDisabled,
 		}),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	go func() {

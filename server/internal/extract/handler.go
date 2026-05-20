@@ -303,7 +303,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	// Idempotency: wipe prior append-dim writes for this event before re-inserting.
 	if err := h.Store.DeleteAppendItemsForEvent(ctx, tx, p.EventID,

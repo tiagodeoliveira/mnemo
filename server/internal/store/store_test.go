@@ -39,7 +39,7 @@ func TestMigrateUp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)

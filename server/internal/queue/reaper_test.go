@@ -8,7 +8,7 @@ import (
 
 func TestReaper_ReleasesStaleLocks(t *testing.T) {
 	s := newStore(t)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	ctx := context.Background()
 
 	// Insert a row in 'running' state with locked_at far in the past.

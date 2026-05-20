@@ -29,7 +29,7 @@ func newStore(t *testing.T) *store.Store {
 
 func TestLeader_OnlyOneAcquires(t *testing.T) {
 	s := newStore(t)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -59,7 +59,7 @@ func TestLeader_OnlyOneAcquires(t *testing.T) {
 
 func TestLeader_DifferentKeysCoexist(t *testing.T) {
 	s := newStore(t)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -84,7 +84,7 @@ func TestLeader_DifferentKeysCoexist(t *testing.T) {
 
 func TestLeader_HandoffAfterCancel(t *testing.T) {
 	s := newStore(t)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	ctx1, cancel1 := context.WithCancel(context.Background())

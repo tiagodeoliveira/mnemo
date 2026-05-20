@@ -96,10 +96,14 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		tagsAll = tags
 		tags = nil
 	}
-	since, until := parseTimeRange(q.Get("since"), q.Get("until"))
+	since, until, err := parseTimeRange(q.Get("since"), q.Get("until"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	limit := 0
 	if lv := q.Get("limit"); lv != "" {
-		fmt.Sscanf(lv, "%d", &limit)
+		_, _ = fmt.Sscanf(lv, "%d", &limit)
 	}
 
 	// Check if semantic search is requested via ?q=
@@ -110,6 +114,7 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	results := make([]dimGroup, len(reqs))
+	errs := make([]error, len(reqs))
 	var wg sync.WaitGroup
 	for i, rq := range reqs {
 		i, rq := i, rq
@@ -127,6 +132,7 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			if err != nil {
 				h.logger.Warn("recall", "dim", rq.dim, "err", err)
+				errs[i] = err
 				return
 			}
 			items := make([]recallItem, len(mems))
@@ -144,6 +150,13 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}()
 	}
 	wg.Wait()
+
+	for _, e := range errs {
+		if e != nil {
+			http.Error(w, "recall failed", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	w.Header().Set("content-type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"dimensions": results})
@@ -193,6 +206,7 @@ func (h *recallHandler) serveSemanticRecall(
 	}
 
 	results := make([]dimGroup, len(reqs))
+	errs := make([]error, len(reqs))
 	var wg sync.WaitGroup
 	for i, rq := range reqs {
 		i, rq := i, rq
@@ -209,6 +223,7 @@ func (h *recallHandler) serveSemanticRecall(
 			})
 			if err != nil {
 				h.logger.Warn("semantic recall", "dim", rq.dim, "err", err)
+				errs[i] = err
 				return
 			}
 			items := make([]recallItem, len(hits))
@@ -227,6 +242,13 @@ func (h *recallHandler) serveSemanticRecall(
 		}()
 	}
 	wg.Wait()
+
+	for _, e := range errs {
+		if e != nil {
+			http.Error(w, "recall failed", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	w.Header().Set("content-type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"dimensions": results})
