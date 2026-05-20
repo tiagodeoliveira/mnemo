@@ -23,7 +23,7 @@ func TestSearchEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestSearchEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status %d: %s", resp.StatusCode, string(raw))
@@ -133,7 +133,7 @@ func TestSearchEndpointBadDate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +172,7 @@ func TestSearchEndpointBadDate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusBadRequest {
 				raw, _ := io.ReadAll(resp.Body)
 				t.Fatalf("want 400, got %d: %s", resp.StatusCode, string(raw))

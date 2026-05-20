@@ -52,7 +52,7 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "db", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	rec, err := h.store.InsertEvent(ctx, tx, store.EventInput{
 		ActorID: actorID, SessionID: req.SessionID, Project: req.Project,

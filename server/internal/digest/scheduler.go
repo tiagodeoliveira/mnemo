@@ -40,7 +40,7 @@ func (s *Scheduler) tick(ctx context.Context) {
 		s.Logger.Warn("scheduler list actors", "err", err)
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	type a struct{ id, tz string }
 	var todo []a
 	for rows.Next() {

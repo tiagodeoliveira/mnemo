@@ -32,7 +32,7 @@ func (h *BackfillEmbeddingsHandler) Handle(ctx context.Context, _ json.RawMessag
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	type pending struct {
 		ID      string

@@ -14,7 +14,7 @@ func TestSemanticSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestSemanticSearchMinSimilarity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestSemanticSearchEmptyEmbedding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}

@@ -39,7 +39,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var transcript strings.Builder
 	for rows.Next() {
@@ -114,7 +114,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 
 	for i, cb := range catBodies {
 		if err := h.Store.ReplaceItemByNamespace(ctx, tx, store.ItemInput{

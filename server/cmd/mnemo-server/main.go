@@ -66,7 +66,7 @@ func main() {
 		logger.Error("store.Open", "err", err)
 		os.Exit(3)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 
 	if err := s.Migrate(); err != nil {
 		logger.Error("migrate", "err", err)

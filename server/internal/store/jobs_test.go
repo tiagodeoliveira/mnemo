@@ -9,7 +9,7 @@ import (
 func TestClaimJobSkipLocked(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}

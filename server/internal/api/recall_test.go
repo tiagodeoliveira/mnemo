@@ -19,7 +19,7 @@ func TestRecallBadDateReturns400(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestRecallBadDateReturns400(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusBadRequest {
 				body, _ := io.ReadAll(resp.Body)
 				t.Fatalf("want 400, got %d: %s", resp.StatusCode, string(body))
@@ -67,7 +67,7 @@ func TestRecallEmptyDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestRecallEmptyDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("want 200, got %d", resp.StatusCode)
 	}
@@ -115,7 +115,7 @@ func TestRecallHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestRecallHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		t.Fatalf("want 200, got %d: %s", resp.StatusCode, string(body))

@@ -12,7 +12,7 @@ import (
 func TestInsertItemAndListByNamespace(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +79,7 @@ func TestInsertItemAndListByNamespace(t *testing.T) {
 func TestListItems(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestListItems(t *testing.T) {
 func TestApplyMemoryDiffInsert(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +179,7 @@ func TestApplyMemoryDiffInsert(t *testing.T) {
 func TestApplyMemoryDiffReinforce(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestApplyMemoryDiffReinforce(t *testing.T) {
 func TestApplyMemoryDiffDelete(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestApplyMemoryDiffDelete(t *testing.T) {
 func TestApplyMemoryDiffUpdate(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +346,7 @@ func TestApplyMemoryDiffHallucinatedIDSilentlyDropped(t *testing.T) {
 	// Hallucinated IDs are now auto-resolved (dropped) rather than rejected.
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +557,7 @@ func TestResolveDiff_EmptyInsertDropped(t *testing.T) {
 func TestDeleteAppendItemsForEvent(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -605,7 +605,7 @@ func TestDeleteAppendItemsForEvent(t *testing.T) {
 func TestReplaceItemByNamespace(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}

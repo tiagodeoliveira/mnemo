@@ -58,7 +58,7 @@ func TestParseMeetingSummaryNoLabelsErrors(t *testing.T) {
 func TestMeetingHandlerWritesCategories(t *testing.T) {
 	dsn := store.StartTestPG(t)
 	s, _ := store.Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ NONE`}, nil
 func TestMeetingHandlerEmptyMeetingErrors(t *testing.T) {
 	dsn := store.StartTestPG(t)
 	s, _ := store.Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
