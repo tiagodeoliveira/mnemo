@@ -103,7 +103,7 @@ func (h *recallHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	limit := 0
 	if lv := q.Get("limit"); lv != "" {
-		fmt.Sscanf(lv, "%d", &limit)
+		_, _ = fmt.Sscanf(lv, "%d", &limit)
 	}
 
 	// Check if semantic search is requested via ?q=

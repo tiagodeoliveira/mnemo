@@ -9,7 +9,7 @@ import (
 func TestInsertEventRejectsBadTurns(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestInsertEventRejectsBadTurns(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tx, _ := s.DB.BeginTx(ctx, nil)
-			defer tx.Rollback()
+			defer func() { _ = tx.Rollback() }()
 			_, err := s.InsertEvent(ctx, tx, EventInput{
 				ActorID:   "auth0|alice",
 				SessionID: "sess-bad",
@@ -50,7 +50,7 @@ func TestInsertEventRejectsBadTurns(t *testing.T) {
 func TestInsertEventAcceptsValidArray(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestInsertEventAcceptsValidArray(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tx, _ := s.DB.BeginTx(ctx, nil)
-			defer tx.Rollback()
+			defer func() { _ = tx.Rollback() }()
 			_, err := s.InsertEvent(ctx, tx, EventInput{
 				ActorID:   "auth0|alice",
 				SessionID: "sess-ok-" + tc.name,
@@ -88,7 +88,7 @@ func TestInsertEventAcceptsValidArray(t *testing.T) {
 func TestInsertEventDenormalizesMeeting(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
-	defer s.Close()
+	defer func() { _ = s.Close() }()
 	if err := s.Migrate(); err != nil {
 		t.Fatal(err)
 	}

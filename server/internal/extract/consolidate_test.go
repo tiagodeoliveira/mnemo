@@ -280,14 +280,13 @@ func TestValidateDiffCoverageRequired(t *testing.T) {
 }
 
 func errorAs(err error, target any) bool {
-	for err != nil {
+	if err != nil {
 		if t, ok := target.(**ConsolidationDiffError); ok {
 			if x, ok2 := err.(*ConsolidationDiffError); ok2 {
 				*t = x
 				return true
 			}
 		}
-		break
 	}
 	return false
 }

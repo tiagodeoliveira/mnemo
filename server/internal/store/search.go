@@ -104,7 +104,7 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var hits []SearchHit
 	for rows.Next() {

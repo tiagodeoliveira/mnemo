@@ -59,7 +59,7 @@ func (o *OpenAI) Complete(ctx context.Context, in CompleteRequest) (CompleteResp
 		msgs = append(msgs, openaiMessage{Role: "system", Content: in.System})
 	}
 	for _, m := range in.Messages {
-		msgs = append(msgs, openaiMessage{Role: m.Role, Content: m.Content})
+		msgs = append(msgs, openaiMessage(m))
 	}
 
 	body := openaiReq{
@@ -83,7 +83,7 @@ func (o *OpenAI) Complete(ctx context.Context, in CompleteRequest) (CompleteResp
 	if err != nil {
 		return CompleteResponse{}, fmt.Errorf("openai: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return CompleteResponse{}, fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(raw))

@@ -74,7 +74,7 @@ func (a *Anthropic) Complete(ctx context.Context, in CompleteRequest) (CompleteR
 	if err != nil {
 		return CompleteResponse{}, fmt.Errorf("anthropic: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return CompleteResponse{}, fmt.Errorf("anthropic: status %d: %s", resp.StatusCode, string(raw))

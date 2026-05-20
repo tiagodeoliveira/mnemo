@@ -72,7 +72,7 @@ func (o *OpenAI) Embed(ctx context.Context, req EmbedRequest) (EmbedResponse, er
 	if err != nil {
 		return EmbedResponse{}, fmt.Errorf("openai embed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return EmbedResponse{}, fmt.Errorf("openai embed: status %d: %s", resp.StatusCode, string(raw))
