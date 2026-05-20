@@ -7,8 +7,11 @@
 #   scripts/dev.sh test                           # go test ./...
 #   scripts/dev.sh test ./internal/store/...      # run a specific package
 #   scripts/dev.sh test -run TestMigrateUp ./internal/store/...
+#   scripts/dev.sh lint                            # golangci-lint (same version as CI)
 #   scripts/dev.sh shell                          # interactive sh inside the container
 set -euo pipefail
+
+LINT_IMAGE="golangci/golangci-lint:v2.12.2"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CMD="${1:-test}"
@@ -23,11 +26,15 @@ case "$CMD" in
     docker compose -f "$ROOT/docker-compose.yml" run --rm dev \
       go test -count=1 "${@:-./...}"
     ;;
+  lint)
+    docker run --rm -v "$ROOT/server:/src" -w /src "$LINT_IMAGE" \
+      golangci-lint run "${@}"
+    ;;
   shell)
     docker compose -f "$ROOT/docker-compose.yml" run --rm dev sh
     ;;
   *)
-    echo "Usage: $0 {build|test|shell} [go test flags...]" >&2
+    echo "Usage: $0 {build|test|lint|shell} [go test flags...]" >&2
     exit 1
     ;;
 esac
