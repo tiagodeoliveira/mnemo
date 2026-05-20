@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -89,7 +90,11 @@ func (h *searchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse since/until — accept RFC3339 or date-only YYYY-MM-DD.
-	opts.Since, opts.Until = parseTimeRange(req.Since, req.Until)
+	opts.Since, opts.Until, err = parseTimeRange(req.Since, req.Until)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	hits, err := h.store.SemanticSearch(r.Context(), opts)
 	if err != nil {
@@ -120,17 +125,27 @@ func (h *searchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseTimeRange parses since/until strings accepting RFC3339 or YYYY-MM-DD.
-func parseTimeRange(since, until string) (sql.NullTime, sql.NullTime) {
-	parse := func(s string) sql.NullTime {
+// Returns an error naming the offending field if a non-empty value cannot be
+// parsed in any accepted format.
+func parseTimeRange(since, until string) (sql.NullTime, sql.NullTime, error) {
+	parse := func(name, s string) (sql.NullTime, error) {
 		if s == "" {
-			return sql.NullTime{}
+			return sql.NullTime{}, nil
 		}
 		for _, layout := range []string{time.RFC3339, "2006-01-02"} {
 			if t, err := time.Parse(layout, s); err == nil {
-				return sql.NullTime{Time: t, Valid: true}
+				return sql.NullTime{Time: t, Valid: true}, nil
 			}
 		}
-		return sql.NullTime{}
+		return sql.NullTime{}, fmt.Errorf("invalid %s: %q (expected RFC3339 or YYYY-MM-DD)", name, s)
 	}
-	return parse(since), parse(until)
+	s, err := parse("since", since)
+	if err != nil {
+		return sql.NullTime{}, sql.NullTime{}, err
+	}
+	u, err := parse("until", until)
+	if err != nil {
+		return sql.NullTime{}, sql.NullTime{}, err
+	}
+	return s, u, nil
 }
