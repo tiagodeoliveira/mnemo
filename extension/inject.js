@@ -107,9 +107,13 @@
     return {
       push(chunk) {
         buf += chunk;
-        let idx;
-        while ((idx = buf.indexOf('\r\n\r\n')) !== -1 || (idx = buf.indexOf('\n\n')) !== -1) {
-          const sep = buf.indexOf('\r\n\r\n') === idx ? 4 : 2;
+        let idx, sep;
+        while (true) {
+          const rn = buf.indexOf('\r\n\r\n');
+          const nn = buf.indexOf('\n\n');
+          if (rn === -1 && nn === -1) break;
+          if (rn !== -1 && (nn === -1 || rn <= nn)) { idx = rn; sep = 4; }
+          else                                       { idx = nn; sep = 2; }
           const raw = buf.slice(0, idx);
           buf = buf.slice(idx + sep);
           const lines = raw.split(/\r?\n/);

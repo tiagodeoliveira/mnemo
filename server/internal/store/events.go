@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -35,7 +36,9 @@ func (s *Store) InsertEvent(ctx context.Context, tx *sql.Tx, in EventInput) (Eve
 		return EventRecord{}, errors.New("turns required")
 	}
 	// Validate that turns is a JSON array, not an object, string, or null.
-	if in.Turns[0] != '[' {
+	// TrimLeft handles valid JSON with leading whitespace (e.g. "  [...]").
+	trimmed := bytes.TrimLeft(in.Turns, " \t\n\r")
+	if len(trimmed) == 0 || trimmed[0] != '[' {
 		return EventRecord{}, ErrBadTurns
 	}
 	attrs := in.Attributes

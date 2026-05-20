@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,53 +51,79 @@ func NewRouter(d Deps) http.Handler {
 
 // ── Per-IP rate limiter ────────────────────────────────────────────────
 
+type ipEntry struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
 type ipRateLimiter struct {
-	mu       sync.Mutex
-	limiters map[string]*rate.Limiter
-	rate     rate.Limit
-	burst    int
+	mu      sync.Mutex
+	entries map[string]*ipEntry
+	rate    rate.Limit
+	burst   int
+	ttl     time.Duration
 }
 
 func newIPRateLimiter(r rate.Limit, burst int) *ipRateLimiter {
-	return &ipRateLimiter{limiters: make(map[string]*rate.Limiter), rate: r, burst: burst}
-}
-
-func (l *ipRateLimiter) get(ip string) *rate.Limiter {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if lim, ok := l.limiters[ip]; ok {
-		return lim
+	rl := &ipRateLimiter{
+		entries: make(map[string]*ipEntry),
+		rate:    r,
+		burst:   burst,
+		ttl:     10 * time.Minute,
 	}
-	lim := rate.NewLimiter(l.rate, l.burst)
-	l.limiters[ip] = lim
-	return lim
+	go rl.evictLoop()
+	return rl
 }
 
-// Sweep removes stale entries. Called inline under lock — cheap because the
-// map is keyed by IP (not request) and production traffic comes from a small
-// set of IPs. A time-based eviction would add complexity for negligible gain.
-func (l *ipRateLimiter) sweep(maxAge time.Duration) {
+func (l *ipRateLimiter) allow(ip string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
-	for ip, lim := range l.limiters {
-		// A full bucket means no request has been seen recently.
-		if lim.Tokens() >= float64(l.burst) {
-			_ = now       // suppress unused
-			_ = maxAge    // placeholder for future TTL eviction
-			delete(l.limiters, ip)
+	e, ok := l.entries[ip]
+	if !ok {
+		e = &ipEntry{limiter: rate.NewLimiter(l.rate, l.burst)}
+		l.entries[ip] = e
+	}
+	e.lastSeen = time.Now()
+	return e.limiter.Allow()
+}
+
+func (l *ipRateLimiter) evictLoop() {
+	t := time.NewTicker(l.ttl)
+	defer t.Stop()
+	for range t.C {
+		l.mu.Lock()
+		cutoff := time.Now().Add(-l.ttl)
+		for ip, e := range l.entries {
+			if e.lastSeen.Before(cutoff) {
+				delete(l.entries, ip)
+			}
 		}
+		l.mu.Unlock()
 	}
+}
+
+// clientIP extracts the client IP for rate-limiting purposes.
+// X-Forwarded-For can be a comma-separated chain; we use the first
+// (leftmost) entry, which is the original client IP as seen by the
+// first proxy. We trim the port from RemoteAddr as a fallback.
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		if i := strings.IndexByte(fwd, ','); i > 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return strings.TrimSpace(fwd)
+	}
+	// RemoteAddr is "IP:port"; strip port.
+	if i := strings.LastIndex(r.RemoteAddr, ":"); i > 0 {
+		return r.RemoteAddr[:i]
+	}
+	return r.RemoteAddr
 }
 
 func rateLimitMiddleware(rl *ipRateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ip := r.RemoteAddr
-			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-				ip = fwd
-			}
-			if !rl.get(ip).Allow() {
+			if !rl.allow(clientIP(r)) {
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
 			}
@@ -108,7 +135,7 @@ func rateLimitMiddleware(rl *ipRateLimiter) func(http.Handler) http.Handler {
 func limitBodyMiddleware(maxBytes int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Body != nil && r.ContentLength != 0 {
+			if r.Body != nil {
 				r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 			}
 			next.ServeHTTP(w, r)

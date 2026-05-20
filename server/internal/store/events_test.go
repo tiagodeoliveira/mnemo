@@ -59,16 +59,30 @@ func TestInsertEventAcceptsValidArray(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tx, _ := s.DB.BeginTx(ctx, nil)
-	_, err := s.InsertEvent(ctx, tx, EventInput{
-		ActorID:   "auth0|alice",
-		SessionID: "sess-ok",
-		Turns:     json.RawMessage(`[{"role":"user","content":"hi"}]`),
-	})
-	if err != nil {
-		t.Fatalf("unexpected error for valid turns: %v", err)
+	cases := []struct {
+		name  string
+		turns json.RawMessage
+	}{
+		{"clean array", json.RawMessage(`[{"role":"user","content":"hi"}]`)},
+		{"leading spaces", json.RawMessage(`  [{"role":"user","content":"hi"}]`)},
+		{"leading newline", json.RawMessage("\n[{\"role\":\"user\"}]")},
+		{"leading tab", json.RawMessage("\t[{\"role\":\"user\"}]")},
+		{"leading crlf", json.RawMessage("\r\n[{\"role\":\"user\"}]")},
 	}
-	_ = tx.Commit()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, _ := s.DB.BeginTx(ctx, nil)
+			defer tx.Rollback()
+			_, err := s.InsertEvent(ctx, tx, EventInput{
+				ActorID:   "auth0|alice",
+				SessionID: "sess-ok-" + tc.name,
+				Turns:     tc.turns,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error for %s: %v", tc.name, err)
+			}
+		})
+	}
 }
 
 func TestInsertEventDenormalizesMeeting(t *testing.T) {

@@ -126,3 +126,57 @@ func TestSearchEndpointMissingQ(t *testing.T) {
 		t.Fatalf("want 400, got %d", rr.Code)
 	}
 }
+
+func TestSearchEndpointBadDate(t *testing.T) {
+	dsn := store.StartTestPG(t)
+	s, err := store.Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertActor(context.Background(), "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	router := NewRouter(Deps{
+		Store:         s,
+		Logger:        logger,
+		EmbedClient:   &embed.Stub{},
+		EmbedDisabled: false,
+		DevActorID:    "alice",
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	cases := []struct {
+		name  string
+		since string
+		until string
+	}{
+		{"bad since", "not-a-date", ""},
+		{"bad until", "", "2024-13-01"},
+		{"bad month", "2024-00-15", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]any{
+				"q":     "test query",
+				"since": tc.since,
+				"until": tc.until,
+			})
+			resp, err := http.Post(srv.URL+"/search", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("want 400, got %d: %s", resp.StatusCode, string(raw))
+			}
+		})
+	}
+}
