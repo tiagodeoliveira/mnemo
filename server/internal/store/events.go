@@ -26,10 +26,17 @@ type EventRecord struct {
 	MeetingEnded bool
 }
 
+// ErrBadTurns is returned when the turns field is not a JSON array.
+var ErrBadTurns = errors.New("turns must be a JSON array")
+
 // InsertEvent denormalizes meeting_id/meeting_ended from attributes.
 func (s *Store) InsertEvent(ctx context.Context, tx *sql.Tx, in EventInput) (EventRecord, error) {
 	if len(in.Turns) == 0 {
 		return EventRecord{}, errors.New("turns required")
+	}
+	// Validate that turns is a JSON array, not an object, string, or null.
+	if in.Turns[0] != '[' {
+		return EventRecord{}, ErrBadTurns
 	}
 	attrs := in.Attributes
 	if len(attrs) == 0 {

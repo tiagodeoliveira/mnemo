@@ -129,7 +129,18 @@ async function clearCredentials() {
   await chrome.storage.local.remove(CRED_KEY);
 }
 
+// Guard against concurrent refresh calls racing on the same refresh token.
+// With Auth0 refresh token rotation (default for public clients), a consumed
+// token cannot be reused — parallel refreshes would invalidate the session.
+let _refreshPromise = null;
+
 async function refreshAccessToken(cfg) {
+  if (_refreshPromise) return _refreshPromise;
+  _refreshPromise = _doRefresh(cfg).finally(() => { _refreshPromise = null; });
+  return _refreshPromise;
+}
+
+async function _doRefresh(cfg) {
   const cur = await loadCredentials();
   if (!cur || !cur.refresh_token) return null;
   const res = await fetch(`https://${cfg.auth0Domain}/oauth/token`, {

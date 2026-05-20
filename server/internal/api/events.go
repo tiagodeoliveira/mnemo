@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -62,7 +61,7 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		var bad *jsonObjectError
-		if errors.As(err, &bad) || errors.Is(err, errBadTurns) {
+		if errors.As(err, &bad) || errors.Is(err, store.ErrBadTurns) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -95,12 +94,9 @@ func (h *eventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("content-type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(eventResponse{EventID: rec.EventID.String()})
-	_ = context.Background()
 }
 
 // Sentinel errors used by the handler for typed mapping.
 type jsonObjectError struct{ msg string }
 
 func (e *jsonObjectError) Error() string { return e.msg }
-
-var errBadTurns = errors.New("turns must be a JSON array")

@@ -86,6 +86,9 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 	if opts.Until.Valid {
 		clauses = append(clauses, "updated_at <= "+addArg(opts.Until.Time))
 	}
+	if opts.MinSimilarity > 0 {
+		clauses = append(clauses, "1 - (embedding <=> $2) >= "+addArg(opts.MinSimilarity))
+	}
 
 	q := fmt.Sprintf(`
 		SELECT memory_id, dimension, namespace, content, tags,
@@ -114,9 +117,6 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 		_ = json.Unmarshal(tagsJSON, &h.Tags)
 		if h.Tags == nil {
 			h.Tags = []string{}
-		}
-		if h.Similarity < opts.MinSimilarity {
-			continue
 		}
 		hits = append(hits, h)
 	}
