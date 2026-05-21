@@ -45,6 +45,7 @@ func NewRouter(d Deps) http.Handler {
 		r.Post("/events", (&eventsHandler{store: d.Store, logger: d.Logger}).ServeHTTP)
 		r.Get("/recall", (&recallHandler{store: d.Store, embedClient: d.EmbedClient, embedDisabled: d.EmbedDisabled, logger: d.Logger}).ServeHTTP)
 		r.Post("/search", (&searchHandler{store: d.Store, embedClient: d.EmbedClient, embedDisabled: d.EmbedDisabled, logger: d.Logger}).ServeHTTP)
+		r.Handle("/me", &meHandler{store: d.Store, logger: d.Logger})
 	})
 	return r
 }

@@ -9,6 +9,7 @@ import { detectProject } from './detect-project';
 import { hookPromptSubmitFromStdin } from './commands/hook-prompt-submit';
 import { hookSessionStartFromStdin } from './commands/hook-session-start';
 import { loginCmd } from './commands/login';
+import { configDigestCmd } from './commands/config-digest';
 
 function collectAttr(value: string, previous: Record<string, string>): Record<string, string> {
   const idx = value.indexOf('=');
@@ -225,6 +226,26 @@ program
       await loginCmd();
     } catch (err: unknown) {
       process.stderr.write(`mnemo login error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
+  });
+
+const configCmd = program
+  .command('config')
+  .description('View and update account settings');
+
+configCmd
+  .command('digest')
+  .description('View or update daily digest settings')
+  .option('--enable', 'Enable daily digest emails')
+  .option('--disable', 'Disable daily digest emails')
+  .option('--timezone <tz>', 'Set timezone (IANA name, e.g. America/Sao_Paulo)')
+  .option('--email <address>', 'Set email address for digest delivery')
+  .action(async (opts) => {
+    try {
+      await configDigestCmd(opts);
+    } catch (err: unknown) {
+      process.stderr.write(`mnemo config digest error: ${err instanceof Error ? err.message : String(err)}\n`);
       process.exit(1);
     }
   });

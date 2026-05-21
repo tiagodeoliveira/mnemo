@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -39,6 +41,52 @@ func (s *Store) GetActor(ctx context.Context, id string) (*Actor, error) {
 		_ = json.Unmarshal(ttlRaw, &a.TTLOverrides)
 	}
 	return &a, nil
+}
+
+// ActorProfileUpdate holds optional fields for a partial actor update.
+// Nil pointers mean "do not change".
+type ActorProfileUpdate struct {
+	Email         *string
+	Timezone      *string
+	DigestEnabled *bool
+}
+
+// UpdateActorProfile applies a partial update to the actor row and returns the
+// refreshed Actor. It builds a dynamic SET clause from non-nil fields.
+func (s *Store) UpdateActorProfile(ctx context.Context, actorID string, u ActorProfileUpdate) (*Actor, error) {
+	setClauses := []string{}
+	args := []any{}
+	idx := 1
+
+	if u.Email != nil {
+		setClauses = append(setClauses, fmt.Sprintf("email = $%d", idx))
+		args = append(args, *u.Email)
+		idx++
+	}
+	if u.Timezone != nil {
+		setClauses = append(setClauses, fmt.Sprintf("timezone = $%d", idx))
+		args = append(args, *u.Timezone)
+		idx++
+	}
+	if u.DigestEnabled != nil {
+		setClauses = append(setClauses, fmt.Sprintf("digest_enabled = $%d", idx))
+		args = append(args, *u.DigestEnabled)
+		idx++
+	}
+
+	if len(setClauses) == 0 {
+		return s.GetActor(ctx, actorID)
+	}
+
+	query := fmt.Sprintf("UPDATE actors SET %s WHERE actor_id = $%d",
+		strings.Join(setClauses, ", "), idx)
+	args = append(args, actorID)
+
+	_, err := s.DB.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetActor(ctx, actorID)
 }
 
 // UpsertActor inserts a new actor or returns the existing one. Display name

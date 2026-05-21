@@ -31,6 +31,77 @@ func TestUpsertActor(t *testing.T) {
 	}
 }
 
+func TestUpdateActorProfile(t *testing.T) {
+	dsn := startPG(t)
+	s, _ := Open(context.Background(), dsn)
+	defer func() { _ = s.Close() }()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.UpsertActor(ctx, "auth0|carol"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify defaults.
+	a, err := s.GetActor(ctx, "auth0|carol")
+	if err != nil || a == nil {
+		t.Fatalf("GetActor: %v", err)
+	}
+	if a.DigestEnabled || a.Email.Valid || a.Timezone != "UTC" {
+		t.Fatalf("unexpected defaults: %+v", a)
+	}
+
+	// Update all three fields at once.
+	email := "carol@example.com"
+	tz := "America/New_York"
+	enabled := true
+	updated, err := s.UpdateActorProfile(ctx, "auth0|carol", ActorProfileUpdate{
+		Email:         &email,
+		Timezone:      &tz,
+		DigestEnabled: &enabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.Email.Valid || updated.Email.String != "carol@example.com" {
+		t.Errorf("email: got %v", updated.Email)
+	}
+	if updated.Timezone != "America/New_York" {
+		t.Errorf("timezone: got %s", updated.Timezone)
+	}
+	if !updated.DigestEnabled {
+		t.Error("digest_enabled should be true")
+	}
+
+	// Partial update: only disable digest, leave email and tz intact.
+	disabled := false
+	partial, err := s.UpdateActorProfile(ctx, "auth0|carol", ActorProfileUpdate{
+		DigestEnabled: &disabled,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if partial.DigestEnabled {
+		t.Error("digest should be disabled")
+	}
+	if partial.Email.String != "carol@example.com" {
+		t.Errorf("email should be unchanged, got %v", partial.Email)
+	}
+	if partial.Timezone != "America/New_York" {
+		t.Errorf("tz should be unchanged, got %s", partial.Timezone)
+	}
+
+	// Empty update returns current state without error.
+	noop, err := s.UpdateActorProfile(ctx, "auth0|carol", ActorProfileUpdate{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noop.Timezone != "America/New_York" {
+		t.Errorf("noop should return current state, got tz=%s", noop.Timezone)
+	}
+}
+
 func TestActorTTLOverrides(t *testing.T) {
 	dsn := startPG(t)
 	s, _ := Open(context.Background(), dsn)
