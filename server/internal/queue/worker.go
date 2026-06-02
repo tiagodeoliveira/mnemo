@@ -1,0 +1,268 @@
+package queue
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"math/rand/v2"
+	"sync"
+	"time"
+
+	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
+	"github.com/tiagodeoliveira/mnemo/server/internal/store"
+)
+
+// WorkerMetricsEmitter receives one event per job outcome. A real
+// implementation lives in internal/observability; tests pass a fake.
+// Nil is allowed (Pool checks before calling).
+type WorkerMetricsEmitter interface {
+	RecordJob(jobType, status string)
+}
+
+// jobTimeout bounds a single handler invocation. Picked to comfortably cover
+// extract_context, which fans out ~4 parallel LLM calls and then runs up to 4
+// sequential consolidation calls — each with a 300s HTTP timeout. A hung
+// handler is much worse than a slow one, so we want a real ceiling.
+const jobTimeout = 10 * time.Minute
+
+// retryDBOp runs op up to 3 times with exponential backoff (500ms/1s/2s).
+// Respects ctx cancellation.
+func retryDBOp(ctx context.Context, op func() error) error {
+	backoffs := []time.Duration{500 * time.Millisecond, 1 * time.Second, 2 * time.Second}
+	var lastErr error
+	for i, b := range backoffs {
+		if err := op(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		// Don't sleep after the last attempt.
+		if i == len(backoffs)-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(b):
+		}
+	}
+	return lastErr
+}
+
+// completeWithRetry tries CompleteJob up to 3 times with exponential backoff.
+// Logs an ERROR on persistent failure — the lock stays held until next boot's
+// ReclaimStaleJobs releases it.
+func (p *Pool) completeWithRetry(ctx context.Context, jobID int64) {
+	if err := retryDBOp(ctx, func() error {
+		return p.store.CompleteJob(ctx, jobID)
+	}); err != nil {
+		p.logger.Error("CompleteJob persistently failed — lock will be reclaimed on next boot",
+			"job_id", jobID, "err", err)
+	}
+}
+
+// failWithRetry tries FailJob up to 3 times with exponential backoff.
+// Logs an ERROR on persistent failure — the lock stays held until next boot's
+// ReclaimStaleJobs releases it.
+func (p *Pool) failWithRetry(ctx context.Context, jobID int64, attempts int, errMsg string, runAfterSec int, maxAttempts int) {
+	if err := retryDBOp(ctx, func() error {
+		return p.store.FailJob(ctx, jobID, attempts, errMsg, runAfterSec, maxAttempts)
+	}); err != nil {
+		p.logger.Error("FailJob persistently failed — lock will be reclaimed on next boot",
+			"job_id", jobID, "err", err)
+	}
+}
+
+// Handler processes one job's payload. Idempotent on retry.
+type Handler func(ctx context.Context, payload json.RawMessage) error
+
+type Pool struct {
+	store    *store.Store
+	logger   *slog.Logger
+	workers  int
+	handlers map[store.JobKind]Handler
+	// breakers and cooldown are derived from PoolConfig. A breaker exists for
+	// every registered handler kind; if a kind's breaker is open, ClaimJob
+	// can still hand the worker a job of that kind (the claim is at the SQL
+	// layer and doesn't know about breakers), but the worker reschedules it
+	// instead of invoking the handler. See loop() for the dispatch.
+	breakers map[store.JobKind]*llm.Breaker
+	cooldown time.Duration
+	metrics  WorkerMetricsEmitter
+}
+
+// PoolConfig groups the breaker + telemetry knobs so NewPool's signature
+// doesn't grow with every new dependency.
+type PoolConfig struct {
+	Workers          int
+	BreakerThreshold int
+	BreakerCooldown  time.Duration
+	BreakerMetrics   llm.BreakerMetrics  // emitted on every breaker state change
+	WorkerMetrics    WorkerMetricsEmitter // emitted on every job outcome
+}
+
+func NewPool(s *store.Store, logger *slog.Logger, handlers map[store.JobKind]Handler, cfg PoolConfig) *Pool {
+	breakers := make(map[store.JobKind]*llm.Breaker, len(handlers))
+	for kind := range handlers {
+		breakers[kind] = &llm.Breaker{
+			Name:      "worker." + string(kind),
+			Threshold: cfg.BreakerThreshold,
+			Cooldown:  cfg.BreakerCooldown,
+			Metrics:   cfg.BreakerMetrics,
+		}
+	}
+	return &Pool{
+		store:    s,
+		logger:   logger,
+		workers:  cfg.Workers,
+		handlers: handlers,
+		breakers: breakers,
+		cooldown: cfg.BreakerCooldown,
+		metrics:  cfg.WorkerMetrics,
+	}
+}
+
+// Run blocks until ctx is done. Returns after all workers drain.
+func (p *Pool) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	for i := 0; i < p.workers; i++ {
+		wg.Add(1)
+		workerID := wfmt(i)
+		go func() {
+			defer wg.Done()
+			p.loop(ctx, workerID)
+		}()
+	}
+	wg.Wait()
+}
+
+func wfmt(i int) string {
+	return "w-" + time.Now().UTC().Format("0405") + "-" + string(rune('0'+i))
+}
+
+func (p *Pool) loop(ctx context.Context, id string) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		j, err := p.store.ClaimJob(ctx, id)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return
+			}
+			p.logger.Error("claim", "worker", id, "err", err)
+			sleepJitter(ctx, time.Second, 5*time.Second)
+			continue
+		}
+		if j == nil {
+			sleepJitter(ctx, time.Second, 5*time.Second)
+			continue
+		}
+		h, ok := p.handlers[j.Kind]
+		if !ok {
+			known := make([]string, 0, len(p.handlers))
+			for k := range p.handlers {
+				known = append(known, string(k))
+			}
+			p.logger.Error("no handler for kind",
+				"worker", id, "kind", string(j.Kind), "kind_len", len(j.Kind),
+				"known", known, "known_count", len(p.handlers))
+			p.failWithRetry(ctx, j.JobID, j.Attempts, "no handler for kind: "+string(j.Kind), 0, 1)
+			p.recordJob(string(j.Kind), "error")
+			continue
+		}
+		// Circuit gate: if this kind's breaker is open (or half-open with a
+		// probe already in flight), refuse to run. We refund the attempt
+		// debited by ClaimJob and push run_after past the cooldown so the
+		// job is naturally re-picked once the breaker is willing to admit
+		// a probe.
+		if br := p.breakers[j.Kind]; br != nil && !br.Allow() {
+			p.logger.Warn("job skipped: circuit open",
+				"worker", id, "kind", j.Kind, "job_id", j.JobID, "state", br.State())
+			cooldownSec := int(p.cooldown.Seconds())
+			if cooldownSec < 1 {
+				cooldownSec = 1
+			}
+			if err := p.store.RescheduleJob(ctx, j.JobID, cooldownSec, "circuit open"); err != nil {
+				p.logger.Error("RescheduleJob failed — lock will be reclaimed on next boot",
+					"job_id", j.JobID, "err", err)
+			}
+			p.recordJob(string(j.Kind), "circuit_open")
+			continue
+		}
+
+		stopHB := p.heartbeat(ctx, j.JobID)
+		jobCtx, cancel := context.WithTimeout(ctx, jobTimeout)
+		err = h(jobCtx, j.Payload)
+		cancel()
+		stopHB()
+
+		if err != nil {
+			if br := p.breakers[j.Kind]; br != nil {
+				br.Failure()
+			}
+			p.logger.Warn("job failed", "worker", id, "kind", j.Kind, "job_id", j.JobID, "attempts", j.Attempts, "err", err)
+			p.failWithRetry(ctx, j.JobID, j.Attempts, err.Error(), BackoffSeconds(j.Attempts), MaxAttempts)
+			p.recordJob(string(j.Kind), "error")
+			continue
+		}
+		if br := p.breakers[j.Kind]; br != nil {
+			br.Success()
+		}
+		p.completeWithRetry(ctx, j.JobID)
+		p.recordJob(string(j.Kind), "ok")
+	}
+}
+
+// recordJob is a nil-safe wrapper around the metrics emitter.
+func (p *Pool) recordJob(kind, status string) {
+	if p.metrics == nil {
+		return
+	}
+	p.metrics.RecordJob(kind, status)
+}
+
+func sleepJitter(ctx context.Context, lo, hi time.Duration) {
+	d := lo + time.Duration(rand.Int64N(int64(hi-lo)))
+	select {
+	case <-ctx.Done():
+	case <-time.After(d):
+	}
+}
+
+// heartbeat keeps a job's locked_at fresh while the handler runs.
+// Returns a cancel function. The goroutine exits when cancel() is called
+// or ctx is done.
+//
+// stopHB must be called BEFORE FailJob/CompleteJob so the heartbeat goroutine
+// doesn't race with the state transition.
+func (p *Pool) heartbeat(ctx context.Context, jobID int64) (cancel func()) {
+	stopCh := make(chan struct{})
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopCh:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				_, err := p.store.DB.ExecContext(ctx,
+					`UPDATE jobs SET locked_at = now()
+					  WHERE job_id = $1 AND state = 'running'`, jobID)
+				if err != nil {
+					p.logger.Warn("heartbeat update failed", "job_id", jobID, "err", err)
+				}
+			}
+		}
+	}()
+	return func() {
+		select {
+		case <-stopCh:
+		default:
+			close(stopCh)
+		}
+	}
+}

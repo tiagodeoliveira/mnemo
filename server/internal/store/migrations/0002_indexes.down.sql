@@ -1,0 +1,9 @@
+DROP INDEX IF EXISTS jobs_state_idx;
+DROP INDEX IF EXISTS jobs_pending_idx;
+DROP INDEX IF EXISTS memories_content_fts;
+DROP INDEX IF EXISTS memories_attributes_gin;
+DROP INDEX IF EXISTS memories_actor_namespace_idx;
+DROP INDEX IF EXISTS memories_actor_dim_created_idx;
+DROP INDEX IF EXISTS events_attributes_gin;
+DROP INDEX IF EXISTS events_meeting_idx;
+DROP INDEX IF EXISTS events_actor_created_idx;

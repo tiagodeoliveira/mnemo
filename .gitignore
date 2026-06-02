@@ -1,0 +1,20 @@
+node_modules/
+dist/
+cdk.out/
+*.js
+*.d.ts
+*.js.map
+!jest.config.js
+!vitest.config.ts
+!extension/**/*.js
+.env
+
+# Tool-local state (Claude Code, .remember/, etc.) — never commit
+.claude/
+.remember/
+
+# Local experiment artifacts
+auris-meetings-bundle.tar.gz
+v2-*.md
+
+*.tgz

@@ -1,0 +1,50 @@
+# Local development stack. Production uses docker-compose.deploy.yml.
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mnemo-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mnemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mnemo}
+      POSTGRES_DB: ${POSTGRES_DB:-mnemo}
+    ports:
+      # Host-side default is 55432 to avoid colliding with any production
+      # or other dev Postgres on 5432. Override with MNEMO_DEV_PG_PORT.
+      - "${MNEMO_DEV_PG_PORT:-55432}:5432"
+    volumes:
+      - mnemo-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mnemo} -d ${POSTGRES_DB:-mnemo}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Go build + test runner. No Go install needed on the host.
+  # Usage: docker compose run --rm dev go test ./...
+  #    or: scripts/dev.sh test
+  dev:
+    build:
+      context: server
+      dockerfile: Dockerfile.dev
+    volumes:
+      - ./server:/src
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      # testcontainers-go needs the Docker socket to spin up sibling
+      # containers (Postgres, Ryuk) on the host daemon.
+      - /var/run/docker.sock:/var/run/docker.sock
+    working_dir: /src
+    environment:
+      CGO_ENABLED: "0"
+    profiles: ["dev"]
+
+volumes:
+  mnemo-pg-data:
+  go-mod-cache:
+  go-build-cache:
+
+networks:
+  default:
+    name: mnemo_default
+    external: true

@@ -1,0 +1,5 @@
+# Dev image for build + test — no source baked in; bind-mounted at runtime.
+# Production builds use Dockerfile (multi-stage → distroless).
+FROM golang:1.26-alpine
+RUN apk add --no-cache git
+WORKDIR /src
