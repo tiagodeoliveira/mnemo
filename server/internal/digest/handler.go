@@ -52,14 +52,26 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		}
 		entries = append(entries, c)
 	}
+	rowsErr := rows.Err()
 	_ = rows.Close()
-	if len(entries) == 0 {
+	if rowsErr != nil {
+		// A mid-stream error would silently truncate the day's entries and
+		// produce a digest from partial data — fail instead.
+		return rowsErr
+	}
+	meetings, err := h.Store.ListMeetingsByDate(ctx, p.ActorID, p.Date)
+	if err != nil {
+		return err
+	}
+
+	if len(entries) == 0 && len(meetings) == 0 {
 		// Nothing to digest — no error, just skip.
 		return nil
 	}
 
 	logsBlock := BuildLogsBlock(entries)
-	prompt := fmt.Sprintf(SystemDailyDigest, p.Date, logsBlock)
+	meetingsBlock := BuildMeetingsBlock(meetings)
+	prompt := fmt.Sprintf(SystemDailyDigest, p.Date, logsBlock, meetingsBlock)
 
 	out, err := h.LLM.Complete(ctx, llm.CompleteRequest{
 		Model:     h.Model,
