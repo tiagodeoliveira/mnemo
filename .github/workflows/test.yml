@@ -3,6 +3,8 @@ on:
   pull_request: {}
   push:
     branches: [main, "feat/**", "fix/**"]
+permissions:
+  contents: read
 jobs:
   go-lint:
     runs-on: ubuntu-latest
