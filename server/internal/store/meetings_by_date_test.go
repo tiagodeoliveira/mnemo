@@ -55,10 +55,11 @@ func TestListMeetingsByDate(t *testing.T) {
 	if got[0].MeetingID != "m1" || got[1].MeetingID != "m2" {
 		t.Fatalf("wrong order/ids: %+v", got)
 	}
-	if got[0].Summary == "" || got[0].Decisions != "Advance to onsite." {
-		t.Fatalf("m1 categories not assembled: %+v", got[0])
+	// Only the summary row is read; the legacy decisions/highlights rows for m1
+	// are ignored by the summary-only query.
+	if got[0].Summary != "An interview with a backend candidate." {
+		t.Fatalf("m1 summary not assembled: %+v", got[0])
 	}
-	// highlights has no field on MeetingRecord, so it can never surface.
 	if got[1].Summary != "A 1:1 about roadmap." {
 		t.Fatalf("m2 summary wrong: %+v", got[1])
 	}

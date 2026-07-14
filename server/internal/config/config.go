@@ -27,6 +27,12 @@ type Config struct {
 	GeminiAPIKey     string `env:"GEMINI_API_KEY"`
 	GeminiModel      string `env:"MNEMO_GEMINI_MODEL" envDefault:"gemini-2.5-flash"`
 	LLMMaxConcurrent int    `env:"MNEMO_LLM_MAX_CONCURRENT" envDefault:"4"`
+	// MeetingModel, when set, is served to the meeting-summary job through a
+	// dedicated single-provider OpenAI client instead of the shared failover
+	// chain. Meeting finalization is infrequent but quality-sensitive, so it
+	// warrants a stronger model (e.g. gpt-4.1) than the cheap chain primary
+	// used for high-frequency consolidation. Empty = reuse the chain primary.
+	MeetingModel string `env:"MNEMO_MEETING_MODEL"`
 	// LLMProviders is the failover order. The first provider in the list is
 	// primary; subsequent ones are tried in order when the primary's breaker
 	// trips or each call errors. Default keeps single-provider behavior.

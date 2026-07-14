@@ -158,8 +158,23 @@ func main() {
 		Store: s, LLM: llmClient, Model: primaryModel,
 		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
 	}
+	// Meeting summaries get a dedicated, stronger model when MNEMO_MEETING_MODEL
+	// is set. It's served through a single metered+throttled OpenAI client: the
+	// shared failover chain rewrites req.Model to each provider's own model, so a
+	// per-job model can only be honored by bypassing the chain. Empty config
+	// keeps the meeting job on the shared chain primary (prior behavior).
+	meetingLLM := llmClient
+	meetingModel := primaryModel
+	if !cfg.LLMDisabled && cfg.MeetingModel != "" {
+		meetingLLM = llm.NewThrottled(
+			llm.NewMetered("openai", &llm.OpenAI{APIKey: cfg.OpenAIAPIKey}, llmMetrics),
+			cfg.LLMMaxConcurrent,
+		)
+		meetingModel = cfg.MeetingModel
+		logger.Info("meeting summary model", "provider", "openai", "model", meetingModel)
+	}
 	meetingHandler := &meeting.Handler{
-		Store: s, LLM: llmClient, Model: primaryModel,
+		Store: s, LLM: meetingLLM, Model: meetingModel,
 		Embed: embedClient, EmbedDisabled: cfg.EmbedDisabled,
 	}
 	mailer := &digest.Mailer{

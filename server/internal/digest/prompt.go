@@ -69,35 +69,22 @@ func BuildLogsBlock(entries []string) string {
 
 // BuildMeetingsBlock renders the day's meetings into the block injected as the
 // third %s of SystemDailyDigest. Each meeting is a numbered block carrying its
-// non-empty categories under uppercase labels, mirroring BuildLogsBlock. The
-// raw meeting id is never emitted — the prompt derives a human label from the
-// summary. Returns "" when there is nothing to show.
+// single narrative summary. The raw meeting id is never emitted — the prompt
+// derives a human label from the summary. A meeting with an empty summary is
+// skipped. Returns "" when there is nothing to show.
 func BuildMeetingsBlock(meetings []store.MeetingRecord) string {
 	var b strings.Builder
 	n := 0
 	for _, m := range meetings {
-		labelled := []struct{ label, body string }{
-			{"SUMMARY", m.Summary},
-			{"DECISIONS", m.Decisions},
-			{"ACTIONS", m.Actions},
-			{"QUESTIONS", m.Questions},
-			{"FOLLOWUPS", m.Followups},
-		}
-		var body strings.Builder
-		for _, p := range labelled {
-			if strings.TrimSpace(p.body) == "" {
-				continue
-			}
-			fmt.Fprintf(&body, "%s:\n%s\n", p.label, strings.TrimSpace(p.body))
-		}
-		if body.Len() == 0 {
+		summary := strings.TrimSpace(m.Summary)
+		if summary == "" {
 			continue
 		}
 		n++
 		if n > 1 {
 			b.WriteString("\n\n")
 		}
-		fmt.Fprintf(&b, "Meeting %d:\n%s", n, strings.TrimSpace(body.String()))
+		fmt.Fprintf(&b, "Meeting %d:\n%s", n, summary)
 	}
 	return b.String()
 }

@@ -54,9 +54,11 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 			continue
 		}
 		for _, t := range arr {
-			role, _ := t["role"].(string)
+			// Each turn's content already carries its "[Speaker N]" label, so we
+			// emit it as-is. Prefixing the wire role ("user") here would produce
+			// confusing "[user] [Speaker N] ..." lines and contradict the prompt.
 			content, _ := t["content"].(string)
-			fmt.Fprintf(&transcript, "[%s] %s\n", role, content)
+			fmt.Fprintf(&transcript, "%s\n", content)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -80,37 +82,22 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		return &MeetingSummaryTruncatedError{MeetingID: p.MeetingID}
 	}
 
-	parsed, err := ParseMeetingSummary(out.Text)
+	summary, err := ParseMeetingSummary(out.Text)
 	if err != nil {
 		return fmt.Errorf("parse meeting output: %w", err)
 	}
 
-	// Collect non-empty category bodies.
-	type catBody struct {
-		cat  string
-		body string
-	}
-	var catBodies []catBody
-	for _, cat := range Categories {
-		body := strings.TrimSpace(parsed[cat])
-		if body != "" {
-			catBodies = append(catBodies, catBody{cat, body})
+	// Embed the single summary body before the tx.
+	var embedding []float32
+	if !h.EmbedDisabled && h.Embed != nil {
+		if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: []string{summary}}); err2 == nil && len(er.Vectors) > 0 {
+			embedding = er.Vectors[0]
+		} else if err2 != nil {
+			slog.Warn("embed meeting summary inline failed; backfill will retry", "err", err2)
 		}
 	}
 
-	// Batch-embed all category bodies before the tx.
-	catEmbeddings := make([][]float32, len(catBodies))
-	if !h.EmbedDisabled && h.Embed != nil && len(catBodies) > 0 {
-		texts := make([]string, len(catBodies))
-		for i, cb := range catBodies {
-			texts[i] = cb.body
-		}
-		if er, err2 := h.Embed.Embed(ctx, embed.EmbedRequest{Texts: texts}); err2 == nil {
-			catEmbeddings = er.Vectors
-		} else {
-			slog.Warn("embed meeting categories inline failed; backfill will retry", "err", err2)
-		}
-	}
+	summaryNS := fmt.Sprintf("/meetings/%s/%s/summary/", p.ActorID, p.MeetingID)
 
 	tx, err := h.Store.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -118,18 +105,25 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	cats := make([]string, len(catBodies))
-	for i, cb := range catBodies {
-		cats[i] = cb.cat
-		if err := h.Store.ReplaceItemByNamespace(ctx, tx, store.ItemInput{
-			ActorID:   p.ActorID,
-			Dimension: "meeting",
-			Namespace: fmt.Sprintf("/meetings/%s/%s/%s/", p.ActorID, p.MeetingID, cb.cat),
-			Content:   cb.body,
-			Embedding: catEmbeddings[i],
-		}); err != nil {
-			return err
-		}
+	if err := h.Store.ReplaceItemByNamespace(ctx, tx, store.ItemInput{
+		ActorID:   p.ActorID,
+		Dimension: "meeting",
+		Namespace: summaryNS,
+		Content:   summary,
+		Embedding: embedding,
+	}); err != nil {
+		return err
+	}
+	// Sweep any legacy per-category rows from an older finalize of this meeting
+	// (decisions/actions/questions/highlights/followups) so the meeting is
+	// represented by exactly one durable memory.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM memories
+		  WHERE actor_id=$1 AND dimension='meeting'
+		    AND namespace LIKE $2 AND namespace <> $3`,
+		p.ActorID, fmt.Sprintf("/meetings/%s/%s/%%", p.ActorID, p.MeetingID), summaryNS,
+	); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
@@ -139,7 +133,7 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		"meeting_id", p.MeetingID,
 		"events", eventCount,
 		"transcript_bytes", transcript.Len(),
-		"categories", cats)
+		"summary_bytes", len(summary))
 	return nil
 }
 

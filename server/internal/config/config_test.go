@@ -27,6 +27,30 @@ func TestLoadAuthDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadMeetingModelOptional(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("MNEMO_AUTH_DISABLED", "1")
+	t.Setenv("MNEMO_EMBED_DISABLED", "1")
+	t.Setenv("MNEMO_LLM_DISABLED", "1")
+	// Unset by default: empty means "fall back to the primary chain model".
+	t.Setenv("MNEMO_MEETING_MODEL", "")
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if c.MeetingModel != "" {
+		t.Fatalf("MeetingModel should default empty, got %q", c.MeetingModel)
+	}
+	t.Setenv("MNEMO_MEETING_MODEL", "gpt-4.1")
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if c.MeetingModel != "gpt-4.1" {
+		t.Fatalf("MeetingModel not parsed, got %q", c.MeetingModel)
+	}
+}
+
 func TestLoadRequiresOpenAIKey(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://x")
 	t.Setenv("MNEMO_AUTH_DISABLED", "1")
