@@ -9,9 +9,46 @@ export interface BootstrapOptions {
   project?: string;
 }
 
-interface BootstrapResponse {
+export interface BootstrapContentOptions {
+  apiUrl: string;
+  auth0Domain: string;
+  auth0ClientId: string;
+  source: string;
+  content: string;
+  project?: string;
+}
+
+export interface BootstrapResponse {
   event_ids: string[];
   chunk_count: number;
+}
+
+export async function executeBootstrapContent(opts: BootstrapContentOptions): Promise<BootstrapResponse> {
+  if (opts.content.trim() === '') {
+    throw new Error('bootstrap content is empty');
+  }
+
+  const token = await getAccessToken({ domain: opts.auth0Domain, clientId: opts.auth0ClientId });
+  if (!token) {
+    throw new Error("Not logged in. Run 'mnemo login' first.");
+  }
+
+  const body: Record<string, unknown> = { source: opts.source, content: opts.content };
+  if (opts.project) body.project = opts.project;
+
+  const resp = await fetch(`${opts.apiUrl}/bootstrap`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`POST /bootstrap failed (${resp.status}): ${text.trim()}`);
+  }
+  return (await resp.json()) as BootstrapResponse;
 }
 
 export async function bootstrapCmd(opts: BootstrapOptions): Promise<void> {
@@ -24,28 +61,15 @@ export async function bootstrapCmd(opts: BootstrapOptions): Promise<void> {
   }
 
   const config = loadConfig();
-  const token = await getAccessToken({ domain: config.auth0Domain, clientId: config.auth0ClientId });
-  if (!token) {
-    throw new Error("Not logged in. Run 'mnemo login' first.");
-  }
-
   const source = opts.source ?? basename(opts.file);
-  const body: Record<string, unknown> = { source, content };
-  if (opts.project) body.project = opts.project;
-
-  const resp = await fetch(`${config.apiUrl}/bootstrap`, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
+  const result = await executeBootstrapContent({
+    apiUrl: config.apiUrl,
+    auth0Domain: config.auth0Domain,
+    auth0ClientId: config.auth0ClientId,
+    source,
+    content,
+    project: opts.project,
   });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`POST /bootstrap failed (${resp.status}): ${text.trim()}`);
-  }
-  const result = (await resp.json()) as BootstrapResponse;
   console.log(`Ingested ${result.chunk_count} chunk(s) from ${source}`);
   console.log(`  ${result.event_ids.length} event(s) queued for extraction`);
 }

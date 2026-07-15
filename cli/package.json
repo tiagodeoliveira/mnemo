@@ -1,7 +1,7 @@
 {
   "name": "mnemo-cli",
   "version": "0.1.0",
-  "description": "mnemo CLI - centralized AI memory client",
+  "description": "mnemo CLI and MCP server - centralized AI memory client",
   "license": "MIT",
   "author": "Tiago Oliveira",
   "repository": {
@@ -19,7 +19,8 @@
     "node": ">=22"
   },
   "bin": {
-    "mnemo": "dist/index.js"
+    "mnemo": "dist/index.js",
+    "mnemo-mcp": "dist/mcp/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -29,7 +30,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "commander": "^13.0.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^13.0.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

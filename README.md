@@ -190,6 +190,20 @@ Returns `200 ok` when the server can reach Postgres.
 
   Or from source: `cd cli && npm ci && npm run build && npm link`.
 
+  The CLI package also ships **`mnemo-mcp`**, a stdio MCP server for agents.
+  It uses the same `~/.mnemo/config.json` and cached login as `mnemo`:
+
+  ```json
+  {
+    "mcpServers": {
+      "mnemo": { "command": "mnemo-mcp" }
+    }
+  }
+  ```
+
+  Tools exposed: `recall_memories`, `search_memories`, `push_event`,
+  `bootstrap_document`, and `get_profile`.
+
 - **`extension/`** — Chrome MV3 extension that intercepts SSE responses from
   `claude.ai` and `chatgpt.com`, tees the turns, and pushes them to `/events`.
   Same Auth0 token flow as the CLI. No build step — load `extension/` directly

@@ -14,7 +14,13 @@ export interface SearchOptions {
   format?: 'text' | 'json';
 }
 
-interface SearchResultItem {
+export interface SearchExecuteOptions extends SearchOptions {
+  apiUrl: string;
+  auth0Domain: string;
+  auth0ClientId: string;
+}
+
+export interface SearchResultItem {
   id: string;
   dimension: string;
   namespace: string;
@@ -26,27 +32,26 @@ interface SearchResultItem {
   reinforced_count: number;
 }
 
-interface SearchResponse {
+export interface SearchResponse {
   results: SearchResultItem[];
   query_embedding_cost_tokens: number;
 }
 
-export async function searchCmd(opts: SearchOptions): Promise<void> {
-  const cfg = loadConfig();
-  const token = await getAccessToken({ domain: cfg.auth0Domain, clientId: cfg.auth0ClientId });
+export async function executeSearch(opts: SearchExecuteOptions): Promise<SearchResponse> {
+  const token = await getAccessToken({ domain: opts.auth0Domain, clientId: opts.auth0ClientId });
   if (!token) throw new Error("Not logged in. Run 'mnemo login' first.");
 
   const body: Record<string, unknown> = { q: opts.q };
-  if (opts.dimensions?.length)            body.dimensions = opts.dimensions;
-  if (opts.tags?.length)                  body.tags = opts.tags;
-  if (opts.tagMode)                       body.tag_mode = opts.tagMode;
-  if (opts.namespacePrefix)               body.namespace_prefix = opts.namespacePrefix;
-  if (opts.since)                         body.since = opts.since;
-  if (opts.until)                         body.until = opts.until;
-  if (opts.limit)                         body.limit = opts.limit;
-  if (opts.minSimilarity !== undefined)   body.min_similarity = opts.minSimilarity;
+  if (opts.dimensions?.length) body.dimensions = opts.dimensions;
+  if (opts.tags?.length) body.tags = opts.tags;
+  if (opts.tagMode) body.tag_mode = opts.tagMode;
+  if (opts.namespacePrefix) body.namespace_prefix = opts.namespacePrefix;
+  if (opts.since) body.since = opts.since;
+  if (opts.until) body.until = opts.until;
+  if (opts.limit) body.limit = opts.limit;
+  if (opts.minSimilarity !== undefined) body.min_similarity = opts.minSimilarity;
 
-  const res = await fetch(`${cfg.apiUrl}/search`, {
+  const res = await fetch(`${opts.apiUrl}/search`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
     body: JSON.stringify(body),
@@ -54,7 +59,17 @@ export async function searchCmd(opts: SearchOptions): Promise<void> {
   if (!res.ok) {
     throw new Error(`search: ${res.status}: ${await res.text()}`);
   }
-  const data = (await res.json()) as SearchResponse;
+  return (await res.json()) as SearchResponse;
+}
+
+export async function searchCmd(opts: SearchOptions): Promise<void> {
+  const cfg = loadConfig();
+  const data = await executeSearch({
+    ...opts,
+    apiUrl: cfg.apiUrl,
+    auth0Domain: cfg.auth0Domain,
+    auth0ClientId: cfg.auth0ClientId,
+  });
 
   if (opts.format === 'json') {
     console.log(JSON.stringify(data, null, 2));

@@ -10,10 +10,14 @@ export interface PushOptions {
   workstation: string;
   workdir: string;
   source?: string;
-  attributes?: Record<string, string>;
+  attributes?: Record<string, unknown>;
 }
 
-export async function executePush(options: PushOptions): Promise<void> {
+export interface PushResponse {
+  event_id: string;
+}
+
+export async function executePush(options: PushOptions): Promise<PushResponse> {
   const token = await getAccessToken({ domain: options.auth0Domain, clientId: options.auth0ClientId });
   if (!token) {
     throw new Error("Not logged in. Run 'mnemo login' first.");
@@ -44,4 +48,9 @@ export async function executePush(options: PushOptions): Promise<void> {
     const text = await response.text();
     throw new Error(`Push failed (${response.status}): ${text}`);
   }
+
+  if (typeof response.json !== 'function') {
+    return { event_id: '' };
+  }
+  return (await response.json()) as PushResponse;
 }

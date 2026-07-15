@@ -14,6 +14,7 @@ export interface RecallOptions {
   project?: string;
   task?: string;
   date?: string;
+  daily?: boolean;
   meeting?: string;
   /** Optional semantic ranking query within the selected dimensions. */
   q?: string;
@@ -65,6 +66,7 @@ export async function executeRecall(options: RecallOptions): Promise<RecallRespo
   if (options.project) params.set('project', options.project);
   if (options.task) params.set('task', options.task);
   if (options.date) params.set('date', options.date);
+  if (options.daily) params.set('daily', 'true');
   if (options.q) params.set('q', options.q);
   if (options.tags) params.set('tags', options.tags);
   if (options.tagMode) params.set('tag_mode', options.tagMode);
