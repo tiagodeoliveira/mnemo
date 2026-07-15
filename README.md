@@ -185,7 +185,7 @@ Returns `200 ok` when the server can reach Postgres.
   Install from a published release (tagged `v*`):
 
   ```bash
-  npm install -g https://github.com/tiagodeoliveira/mnemo/releases/download/v0.1.0/mnemo-cli-0.1.0.tgz
+  npm install -g https://github.com/tiagodeoliveira/mnemo/releases/download/v0.2.0/mnemo-cli-0.2.0.tgz
   ```
 
   Or from source: `cd cli && npm ci && npm run build && npm link`.

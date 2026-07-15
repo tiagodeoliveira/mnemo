@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "mnemo capture",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Capture conversations from claude.ai and chatgpt.com into mnemo via network interception.",
   "permissions": ["storage", "alarms", "tabs", "identity"],
   "host_permissions": [
