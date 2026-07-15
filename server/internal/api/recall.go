@@ -37,6 +37,7 @@ type recallItem struct {
 	UpdatedAt       time.Time `json:"updated_at"`
 	ReinforcedCount int       `json:"reinforced_count"`
 	Similarity      float32   `json:"similarity,omitempty"`
+	FusedScore      float32   `json:"fused_score,omitempty"`
 }
 
 type dimReq struct {
@@ -243,6 +244,7 @@ func (h *recallHandler) serveSemanticRecall(
 					UpdatedAt:       hit.UpdatedAt,
 					ReinforcedCount: hit.ReinforcedCount,
 					Similarity:      hit.Similarity,
+					FusedScore:      hit.FusedScore,
 				}
 			}
 			results[i] = dimGroup{Dimension: rq.dim, Namespace: rq.prefix, Items: items}

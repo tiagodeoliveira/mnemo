@@ -125,7 +125,11 @@ export function makeTools(api: MnemoApi): ToolDef[] {
     {
       name: 'search_memories',
       description:
-        'Semantic search across mnemo memories. Use dimensions, tags, namespace_prefix, date range, limit, and min_similarity to narrow results.',
+        'Hybrid search across mnemo memories: reciprocal-rank fusion of vector similarity and full-text search over content, then boosted by reinforcement count. ' +
+        'Results are ordered by `fused_score` descending — that is the actual sort key. ' +
+        '`similarity` is the pure cosine component only; in hybrid mode it does not explain the ranking (a row with lower `similarity` can rank above one with higher `similarity` when it matches both signals). ' +
+        '`min_similarity` filters on the cosine component; rows without an embedding above the threshold are excluded even when they match the text. ' +
+        'Use dimensions, tags, namespace_prefix, date range, and limit to narrow results.',
       schema: {
         q: z.string().min(1),
         dimensions: z.array(z.string().min(1)).optional(),

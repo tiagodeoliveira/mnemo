@@ -65,6 +65,7 @@ describe('mnemo MCP tools', () => {
           content: 'mnemo uses pgvector',
           tags: ['architecture'],
           similarity: 0.91,
+          fused_score: 0.032,
           created_at: '2026-01-01T00:00:00Z',
           updated_at: '2026-01-01T00:00:00Z',
           reinforced_count: 2,

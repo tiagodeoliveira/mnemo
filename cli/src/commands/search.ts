@@ -26,7 +26,10 @@ export interface SearchResultItem {
   namespace: string;
   content: string;
   tags: string[];
+  /** Cosine similarity component only. In hybrid mode this is not the sort key — see fused_score. */
   similarity: number;
+  /** Actual ranking score (RRF-fused in hybrid mode, cosine-based in vector-only, both boosted by reinforcement). Results are ordered by this descending. */
+  fused_score: number;
   created_at: string;
   updated_at: string;
   reinforced_count: number;

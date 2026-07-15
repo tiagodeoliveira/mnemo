@@ -42,6 +42,12 @@ const rrfK = 60
 const reinforceBoostWeight = 0.2
 
 // SearchHit is one result row.
+//
+// Similarity is the pure cosine component (`1 - (embedding <=> query)`).
+// FusedScore is the value the ORDER BY actually sorted on, including the
+// reinforcement boost — RRF-fused in hybrid mode, cosine-based in vector-only.
+// Rows are returned in descending FusedScore order; Similarity alone does not
+// explain the ranking in hybrid mode.
 type SearchHit struct {
 	ID              uuid.UUID
 	Dimension       string
@@ -49,6 +55,7 @@ type SearchHit struct {
 	Content         string
 	Tags            []string
 	Similarity      float32
+	FusedScore      float32
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	ReinforcedCount int
@@ -138,8 +145,16 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 	var q string
 	if hybrid {
 		vecMinSimClause := ""
+		outerMinSimClause := ""
 		if minSim > 0 {
+			// Filter both the vec candidate pool (efficiency) and the outer
+			// join result (correctness). Without the outer filter, an FTS-only
+			// row whose cosine is below minSim — or whose embedding is NULL —
+			// would still surface via the FULL OUTER JOIN and violate the
+			// caller's threshold. Emit the arg twice; the placeholder is
+			// distinct so bind-parameter counting stays correct.
 			vecMinSimClause = " AND 1 - (embedding <=> $2) >= " + addArg(minSim)
+			outerMinSimClause = " WHERE m.embedding IS NOT NULL AND 1 - (m.embedding <=> $2) >= " + addArg(minSim)
 		}
 		q = fmt.Sprintf(`
 			WITH
@@ -167,20 +182,20 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 			fused AS (
 				SELECT COALESCE(vec.memory_id, fts.memory_id) AS memory_id,
 				       COALESCE(1.0 / (%d + vec.rank::float), 0) +
-				       COALESCE(1.0 / (%d + fts.rank::float), 0) AS rrf_score,
-				       COALESCE(vec.similarity, 0) AS similarity
+				       COALESCE(1.0 / (%d + fts.rank::float), 0) AS rrf_score
 				  FROM vec FULL OUTER JOIN fts USING (memory_id)
 			)
 			SELECT m.memory_id, m.dimension, m.namespace, m.content, m.tags,
 			       m.created_at, m.updated_at, m.reinforced_count,
-			       fused.similarity
+			       COALESCE(1 - (m.embedding <=> $2), 0) AS similarity,
+			       fused.rrf_score * (1 + %g * ln(1 + m.reinforced_count)) AS fused_score
 			  FROM fused
-			  JOIN memories m USING (memory_id)
+			  JOIN memories m USING (memory_id)%s
 			 ORDER BY fused.rrf_score * (1 + %g * ln(1 + m.reinforced_count)) DESC
 			 LIMIT %d
 		`, filterClause, vecMinSimClause, candidateLimit,
 			queryTextPlaceholder, filterClause, queryTextPlaceholder, queryTextPlaceholder, candidateLimit,
-			rrfK, rrfK, reinforceBoostWeight, opts.Limit)
+			rrfK, rrfK, reinforceBoostWeight, outerMinSimClause, reinforceBoostWeight, opts.Limit)
 	} else {
 		clauses = append(clauses, "embedding IS NOT NULL")
 		if minSim > 0 {
@@ -194,12 +209,13 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 		q = fmt.Sprintf(`
 			SELECT memory_id, dimension, namespace, content, tags,
 			       created_at, updated_at, reinforced_count,
-			       1 - (embedding <=> $2) AS similarity
+			       1 - (embedding <=> $2) AS similarity,
+			       (1 - (embedding <=> $2)) * (1 + %g * ln(1 + reinforced_count)) AS fused_score
 			  FROM memories
 			 WHERE %s
 			 ORDER BY (1 - (embedding <=> $2)) * (1 + %g * ln(1 + reinforced_count)) DESC
 			 LIMIT %d
-		`, strings.Join(clauses, " AND "), reinforceBoostWeight, opts.Limit)
+		`, reinforceBoostWeight, strings.Join(clauses, " AND "), reinforceBoostWeight, opts.Limit)
 	}
 
 	rows, err := s.DB.QueryContext(ctx, q, args...)
@@ -213,7 +229,7 @@ func (s *Store) SemanticSearch(ctx context.Context, opts SearchOpts) ([]SearchHi
 		var h SearchHit
 		var tagsJSON []byte
 		if err := rows.Scan(&h.ID, &h.Dimension, &h.Namespace, &h.Content, &tagsJSON,
-			&h.CreatedAt, &h.UpdatedAt, &h.ReinforcedCount, &h.Similarity); err != nil {
+			&h.CreatedAt, &h.UpdatedAt, &h.ReinforcedCount, &h.Similarity, &h.FusedScore); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal(tagsJSON, &h.Tags)

@@ -32,6 +32,7 @@ type searchResponseItem struct {
 	Content         string    `json:"content"`
 	Tags            []string  `json:"tags"`
 	Similarity      float32   `json:"similarity"`
+	FusedScore      float32   `json:"fused_score"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	ReinforcedCount int       `json:"reinforced_count"`
@@ -116,6 +117,7 @@ func (h *searchHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Content:         hit.Content,
 			Tags:            hit.Tags,
 			Similarity:      hit.Similarity,
+			FusedScore:      hit.FusedScore,
 			CreatedAt:       hit.CreatedAt,
 			UpdatedAt:       hit.UpdatedAt,
 			ReinforcedCount: hit.ReinforcedCount,

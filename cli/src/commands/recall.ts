@@ -39,7 +39,10 @@ export interface RecallItem {
   created_at: string;
   updated_at: string;
   reinforced_count: number;
+  /** Cosine similarity component (present only when ?q= is used). */
   similarity?: number;
+  /** Actual ranking score used to order results (present only when ?q= is used). */
+  fused_score?: number;
 }
 
 export interface RecallDimension {

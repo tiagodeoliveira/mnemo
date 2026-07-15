@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -451,6 +452,206 @@ func TestSemanticSearchReinforcementBoost(t *testing.T) {
 	}
 	if hits[0].Content != "long-held conviction" {
 		t.Fatalf("expected reinforced row to outrank: got order %+v", topContents(hits))
+	}
+}
+
+// TestSemanticSearchHybridMinSimilarityFiltersFTSOnly guards the fix for a
+// leak where FTS-only rows (whose cosine was below the caller's threshold —
+// or whose embedding was NULL entirely) could still surface via the RRF
+// FULL OUTER JOIN. Only vec-matching rows above the threshold should return.
+func TestSemanticSearchHybridMinSimilarityFiltersFTSOnly(t *testing.T) {
+	dsn := startPG(t)
+	s, err := Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.UpsertActor(ctx, "eve"); err != nil {
+		t.Fatal(err)
+	}
+
+	dim := 1536
+	makeVec := func(seed float32) []float32 {
+		v := make([]float32, dim)
+		for i := range v {
+			v[i] = seed
+		}
+		var norm float32
+		for _, x := range v {
+			norm += x * x
+		}
+		invNorm := float32(1.0)
+		if norm > 0 {
+			invNorm = 1.0 / norm
+			z := invNorm / 2
+			for i := 0; i < 6; i++ {
+				z = (z + invNorm/z) / 2
+			}
+			invNorm = z
+		}
+		for i := range v {
+			v[i] *= invNorm
+		}
+		return v
+	}
+
+	queryVec := makeVec(1.0)
+	closeVec := makeVec(0.99) // high cosine — passes threshold
+	farVec := makeVec(-1.0)   // opposite direction — well below threshold
+
+	// closeRow: high cosine, no textual match on the query token
+	// farRow:   low cosine but contains the literal query term (FTS match)
+	eventID := uuid.New()
+	tx, _ := s.DB.BeginTx(ctx, nil)
+	rows := []struct {
+		content string
+		vec     []float32
+	}{
+		{"general semantic neighbour with no keyword", closeVec},
+		{"far item that mentions pg_try_advisory_lock literally", farVec},
+	}
+	for _, r := range rows {
+		id := uuid.New()
+		tagsJSON := tagsToJSON([]string{"pattern"})
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO memories (
+				memory_id, actor_id, dimension, namespace, content,
+				tags, attributes, source_event_ids, reinforced_count,
+				created_at, updated_at, embedding
+			) VALUES ($1, $2, $3, $4, $5, $6, '{}', ARRAY[$7::uuid], 1, now(), now(), $8)
+		`, id, "eve", "preferences", "/preferences/eve/", r.content,
+			tagsJSON, eventID, pgvector.NewVector(r.vec)); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("insert %q: %v", r.content, err)
+		}
+	}
+	_ = tx.Commit()
+
+	// Hybrid + high MinSimilarity: the FTS-matching row is below threshold on
+	// cosine and must be filtered even though it wins the FTS ranking.
+	hits, err := s.SemanticSearch(ctx, SearchOpts{
+		ActorID:        "eve",
+		QueryText:      "pg_try_advisory_lock",
+		QueryEmbedding: queryVec,
+		MinSimilarity:  0.5,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, h := range hits {
+		if h.Similarity < 0.5 {
+			t.Errorf("hybrid+min_sim leak: got %q at similarity=%f, below threshold 0.5", h.Content, h.Similarity)
+		}
+		if h.Content == "far item that mentions pg_try_advisory_lock literally" {
+			t.Errorf("FTS-only row surfaced above min_sim threshold: %q", h.Content)
+		}
+	}
+}
+
+// TestSemanticSearchFusedScorePopulated guards the second fix: both hybrid
+// and vector-only paths expose the actual ordering score so callers can see
+// why row N is ranked ahead of row N+1. The scores must be non-increasing.
+func TestSemanticSearchFusedScorePopulated(t *testing.T) {
+	dsn := startPG(t)
+	s, err := Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.UpsertActor(ctx, "frank"); err != nil {
+		t.Fatal(err)
+	}
+
+	dim := 1536
+	makeVec := func(seed float32) []float32 {
+		v := make([]float32, dim)
+		for i := range v {
+			v[i] = seed
+		}
+		var norm float32
+		for _, x := range v {
+			norm += x * x
+		}
+		invNorm := float32(1.0)
+		if norm > 0 {
+			invNorm = 1.0 / norm
+			z := invNorm / 2
+			for i := 0; i < 6; i++ {
+				z = (z + invNorm/z) / 2
+			}
+			invNorm = z
+		}
+		for i := range v {
+			v[i] *= invNorm
+		}
+		return v
+	}
+	queryVec := makeVec(1.0)
+
+	eventID := uuid.New()
+	tx, _ := s.DB.BeginTx(ctx, nil)
+	for i, seed := range []float32{0.99, 0.9, 0.7, 0.4} {
+		id := uuid.New()
+		tagsJSON := tagsToJSON([]string{"t"})
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO memories (
+				memory_id, actor_id, dimension, namespace, content,
+				tags, attributes, source_event_ids, reinforced_count,
+				created_at, updated_at, embedding
+			) VALUES ($1, $2, $3, $4, $5, $6, '{}', ARRAY[$7::uuid], 1, now(), now(), $8)
+		`, id, "frank", "preferences", "/preferences/frank/",
+			fmt.Sprintf("row %d discusses concurrency patterns", i),
+			tagsJSON, eventID, pgvector.NewVector(makeVec(seed))); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+	_ = tx.Commit()
+
+	// Vector-only path
+	vec, err := s.SemanticSearch(ctx, SearchOpts{
+		ActorID:        "frank",
+		QueryEmbedding: queryVec,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, h := range vec {
+		if h.FusedScore <= 0 {
+			t.Errorf("vec-only: hit[%d] has non-positive FusedScore %f", i, h.FusedScore)
+		}
+		if i > 0 && vec[i-1].FusedScore < h.FusedScore {
+			t.Errorf("vec-only: FusedScore not monotonically non-increasing: %f then %f", vec[i-1].FusedScore, h.FusedScore)
+		}
+	}
+
+	// Hybrid path
+	hyb, err := s.SemanticSearch(ctx, SearchOpts{
+		ActorID:        "frank",
+		QueryText:      "concurrency",
+		QueryEmbedding: queryVec,
+		Limit:          10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, h := range hyb {
+		if h.FusedScore <= 0 {
+			t.Errorf("hybrid: hit[%d] has non-positive FusedScore %f", i, h.FusedScore)
+		}
+		if i > 0 && hyb[i-1].FusedScore < h.FusedScore {
+			t.Errorf("hybrid: FusedScore not monotonically non-increasing: %f then %f", hyb[i-1].FusedScore, h.FusedScore)
+		}
 	}
 }
 
