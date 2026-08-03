@@ -3,6 +3,7 @@ package meeting
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/tiagodeoliveira/mnemo/server/internal/llm"
@@ -98,6 +99,67 @@ func TestMeetingHandlerWritesSingleSummary(t *testing.T) {
 	}
 	if content != narrative {
 		t.Errorf("content: %q", content)
+	}
+}
+
+func TestMeetingHandlerProjectsRoleAsSpeakerLabel(t *testing.T) {
+	dsn := store.StartTestPG(t)
+	s, _ := store.Open(context.Background(), dsn)
+	defer func() { _ = s.Close() }()
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := s.UpsertActor(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Three turns exercising every branch of speakerLabel:
+	//   - role="Tiago"     → named participant, prepended as "Tiago: ..."
+	//   - role="Speaker 2" → anonymous id used verbatim as label
+	//   - role="user"      → legacy generic role, content emitted as-is
+	turns := []struct {
+		role, content string
+	}{
+		{"Tiago", "let's ship it"},
+		{"Speaker 2", "ship what exactly"},
+		{"user", "[Speaker 3] I'm just observing"},
+	}
+	tx, _ := s.DB.BeginTx(ctx, nil)
+	for _, tr := range turns {
+		body, _ := json.Marshal([]map[string]string{{"role": tr.role, "content": tr.content}})
+		if _, err := s.InsertEvent(ctx, tx, store.EventInput{
+			ActorID: "alice", SessionID: "s",
+			Turns:      body,
+			Attributes: json.RawMessage(`{"meeting_id":"m1"}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = tx.Commit()
+
+	var seenPrompt string
+	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		seenPrompt = req.Messages[0].Content
+		return llm.CompleteResponse{Text: "narrative"}, nil
+	}}
+	h := &Handler{Store: s, LLM: stub, Model: "gpt-test"}
+	if err := h.Handle(ctx, []byte(`{"actor_id":"alice","meeting_id":"m1"}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(seenPrompt, "Tiago: let's ship it") {
+		t.Errorf("named role not projected as label; prompt=\n%s", seenPrompt)
+	}
+	if !strings.Contains(seenPrompt, "Speaker 2: ship what exactly") {
+		t.Errorf("explicit anonymous id not projected as label; prompt=\n%s", seenPrompt)
+	}
+	if !strings.Contains(seenPrompt, "[Speaker 3] I'm just observing") {
+		t.Errorf("legacy user-role content not emitted verbatim; prompt=\n%s", seenPrompt)
+	}
+	// The generic "user" role must NOT leak into the transcript as a label.
+	if strings.Contains(seenPrompt, "user: [Speaker 3]") {
+		t.Errorf("generic role leaked as label; prompt=\n%s", seenPrompt)
 	}
 }
 

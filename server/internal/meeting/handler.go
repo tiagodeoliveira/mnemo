@@ -54,11 +54,15 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 			continue
 		}
 		for _, t := range arr {
-			// Each turn's content already carries its "[Speaker N]" label, so we
-			// emit it as-is. Prefixing the wire role ("user") here would produce
-			// confusing "[user] [Speaker N] ..." lines and contradict the prompt.
 			content, _ := t["content"].(string)
-			fmt.Fprintf(&transcript, "%s\n", content)
+			role, _ := t["role"].(string)
+			if label := speakerLabel(role); label != "" {
+				fmt.Fprintf(&transcript, "%s: %s\n", label, content)
+			} else {
+				// Legacy / anonymous: content is expected to carry its own
+				// "[Speaker N]" prefix; emit as-is.
+				fmt.Fprintf(&transcript, "%s\n", content)
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -135,6 +139,20 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		"transcript_bytes", transcript.Len(),
 		"summary_bytes", len(summary))
 	return nil
+}
+
+// speakerLabel decides how a turn's `role` should be projected into the
+// transcript. Standard chat roles are treated as "no speaker identity" so
+// content is emitted verbatim (preserving any legacy "[Speaker N]" prefix the
+// caller baked into it). Anything else — a real name like "Tiago" or an
+// explicit anonymous id like "Speaker 2" — is used as the line's speaker label.
+func speakerLabel(role string) string {
+	r := strings.TrimSpace(role)
+	switch strings.ToLower(r) {
+	case "", "user", "assistant", "system", "tool", "function":
+		return ""
+	}
+	return r
 }
 
 func sanitizeMeetingID(id string) string {
