@@ -107,11 +107,16 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 		buildDomainList(domains),
 	) + "\n\nCONVERSATION:\n" + turnsText
 
-	// The about extractor sees only the actor's own (user) turns — see
-	// userTurnsToText. With no user turns there is nothing biographical to
-	// find, so skip the call entirely.
+	// The about and preferences extractors see only the actor's own (user)
+	// turns — see userTurnsToText. A coding session is mostly assistant
+	// narration and tool output; feeding that to these extractors made the
+	// model mine assistant narration ("manages tokens proactively...",
+	// "uses Docker multi-tagging strategy...") as if it were a fact about
+	// the actor. With no user turns there is nothing to find, so skip the
+	// call entirely.
 	aboutTurns := userTurnsToText(turnsRaw)
 	aboutPrompt := SystemExtractAbout + "\n\nCONVERSATION:\n" + aboutTurns
+	prefTurns := userTurnsToText(turnsRaw)
 
 	g, gctx := errgroup.WithContext(ctx)
 
@@ -146,22 +151,24 @@ func (h *Handler) Handle(ctx context.Context, raw json.RawMessage) error {
 	}
 
 	var prefs PreferencesOutput
-	g.Go(func() error {
-		out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
-			Model:     h.Model,
-			System:    SystemExtractPreferences,
-			Messages:  []llm.Message{{Role: "user", Content: turnsText}},
-			MaxTokens: 512,
+	if prefTurns != "" {
+		g.Go(func() error {
+			out, err := h.LLM.Complete(gctx, llm.CompleteRequest{
+				Model:     h.Model,
+				System:    SystemExtractPreferences,
+				Messages:  []llm.Message{{Role: "user", Content: prefTurns}},
+				MaxTokens: 512,
+			})
+			if err != nil {
+				return err
+			}
+			prefs, err = ParsePreferences(out.Text)
+			if err != nil {
+				slog.Warn("preferences parse failed, treating as empty", "err", err)
+			}
+			return nil
 		})
-		if err != nil {
-			return err
-		}
-		prefs, err = ParsePreferences(out.Text)
-		if err != nil {
-			slog.Warn("preferences parse failed, treating as empty", "err", err)
-		}
-		return nil
-	})
+	}
 
 	var ep EpisodesOutput
 	episodesEnabled := actor.EpisodeStrategy != "disabled"

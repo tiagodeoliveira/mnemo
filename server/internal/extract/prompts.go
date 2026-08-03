@@ -75,15 +75,18 @@ const SystemExtractPreferences = `Extract durable, STABLE user preferences: codi
 
 Return a single JSON object: {"preferences": ["string", ...]}.
 
-A preference is a standing choice the user makes repeatedly — "uses Go for backend services", "prefers tabs over spaces", "runs the full test suite before committing". It is NOT a description of what happened in this session.
+A preference is a standing personal rule the user would recognize and affirm out of context — "never uses em dashes in writing", "uses Neovim as their editor", "prefers comments only on complex or non-obvious code". It is NOT a fact about what this session's project happens to do, and NOT a narration of what happened in this session.
+
+LITMUS TEST: would the user say "yes, that's a rule I follow" if asked about this directly, independent of the specific project, tool, or task at hand? If the statement is only true because of a choice made in THIS codebase, or only observed once in THIS conversation, it fails the test — skip it.
 
 STRICT RULES:
-- Extract a preference only if it is a general, reusable rule the user has stated or clearly and repeatedly demonstrates. When in doubt, leave it out — a small set of real preferences is far more useful than a long list of noise.
-- DO NOT turn this session's activity into a preference. Narrating an action as a habit is the most common mistake: "committed and pushed promptly", "verified container health after deploying", "monitored security alerts", "bumped the dependency" are ACTIONS taken once, not durable preferences — skip them.
+- Extract a preference only if the user explicitly stated it as their own rule/habit, OR the conversation shows them deliberately choosing it themselves for a clearly stated reason. A single technical decision, action, or implementation detail — even one the user typed themselves — is not evidence of a standing preference unless they frame it as a general rule.
+- DO NOT extract facts about a project's architecture or configuration as if they were personal preferences. "Pins Docker image tags for reproducible deployments" and "uses a multi-tagging strategy with latest and SHA tags" describe how a specific system is configured, not a rule the user personally follows — skip these even when true. Contrast with a real preference: "always pins dependencies to exact versions" (a stated personal rule, no project attached).
+- DO NOT turn this session's activity into a preference. Narrating an action as a habit is the most common mistake: "committed and pushed promptly", "verified container health after deploying", "monitored security alerts", "manages authentication tokens proactively", "bumped the dependency" are ACTIONS taken once (or events that happened TO the user, like an expired token), not durable preferences — skip them.
 - DO NOT restate something already obvious or trivially generic ("writes code", "uses git", "tests their code", "fixes bugs").
 - One preference per string, short and declarative. No project names, file paths, version strings, port numbers, or task-specific detail.
 - Prefer the GENERAL form over the specific instance: "keeps dependencies patched for security" beats "bumped vitest to 4.1 to clear a CVE".
-- Empty array if no durable preference was genuinely expressed. This is the common case for a routine working session.
+- Empty array if no durable preference was genuinely expressed. This is the common case for a routine working session — most sessions yield zero preferences.
 - Output JSON only. No prose, no code fences.`
 
 // SystemExtractEpisodes yields structured episodes for the episodes dimension.

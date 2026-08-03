@@ -189,6 +189,109 @@ func TestExtractHandlerSkipsAboutWhenNoUserTurns(t *testing.T) {
 	}
 }
 
+// When an event has no user turns (e.g. an assistant/tool-only slice), the
+// preferences extractor must be skipped entirely — no preference can come
+// from the tooling talking to itself. Mirrors
+// TestExtractHandlerSkipsAboutWhenNoUserTurns.
+func TestExtractHandlerSkipsPreferencesWhenNoUserTurns(t *testing.T) {
+	s, h, _ := setup(t)
+	ctx := context.Background()
+	tx, _ := s.DB.BeginTx(ctx, nil)
+	rec, err := s.InsertEvent(ctx, tx, store.EventInput{
+		ActorID:   "alice",
+		SessionID: "s-nouser-prefs",
+		Project:   "demo",
+		Turns:     json.RawMessage(`[{"role":"assistant","content":"Let me inspect the bridge."},{"role":"tool","content":"[session-activity: bash=ls]"}]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Commit()
+
+	payload, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: rec.EventID})
+	if err := h.Handle(ctx, payload); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM memories WHERE actor_id='alice' AND dimension='preferences'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("preferences must be empty for an assistant/tool-only event, got %d rows", n)
+	}
+}
+
+// The preferences extractor must see only the actor's own turns, exactly
+// like the about extractor (see userTurnsToText). A coding session is
+// mostly assistant narration and tool output; feeding that to the
+// preferences extractor is what produced records like "Manages
+// authentication tokens proactively to ensure seamless tool operation" from
+// the assistant's own debugging narration, not anything the user said about
+// themselves.
+func TestPreferencesExtractorOnlySeesUserTurns(t *testing.T) {
+	dsn := store.StartTestPG(t)
+	s, err := store.Open(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	ctx := context.Background()
+	if _, err := s.UpsertActor(ctx, "alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	var capturedPrefsInput string
+	stub := &llm.Stub{Handler: func(req llm.CompleteRequest) (llm.CompleteResponse, error) {
+		user := ""
+		if len(req.Messages) > 0 {
+			user = req.Messages[0].Content
+		}
+		if req.System == SystemExtractPreferences {
+			capturedPrefsInput = user
+			return llm.CompleteResponse{Text: `{"preferences":[]}`}, nil
+		}
+		switch {
+		case strings.Contains(user, "CLASSIFY THE TASK DOMAIN"):
+			return llm.CompleteResponse{Text: "TASK: coding\nPROJECT_FACTS:\nNONE\nTASK_FACTS:\nNONE\nDAILY:\nNONE"}, nil
+		case strings.Contains(user, "extracting biographical"):
+			return llm.CompleteResponse{Text: "ABOUT:\nNONE"}, nil
+		}
+		return llm.CompleteResponse{Text: `{"keep":[],"reinforce":[],"delete":[],"update":[],"insert":[]}`}, nil
+	}}
+	h := &Handler{Store: s, LLM: stub, Model: "claude-test"}
+
+	tx, _ := s.DB.BeginTx(ctx, nil)
+	rec, err := s.InsertEvent(ctx, tx, store.EventInput{
+		ActorID:   "alice",
+		SessionID: "s-mixed",
+		Project:   "demo",
+		Turns: json.RawMessage(`[
+			{"role":"user","content":"debug why the token refresh is failing"},
+			{"role":"assistant","content":"Manages authentication tokens proactively to ensure seamless tool operation. Uses Docker multi-tagging strategy with both latest and SHA tags."}
+		]`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = tx.Commit()
+
+	payload, _ := json.Marshal(contextPayload{ActorID: "alice", EventID: rec.EventID})
+	if err := h.Handle(ctx, payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(capturedPrefsInput, "Manages authentication tokens proactively") ||
+		strings.Contains(capturedPrefsInput, "Docker multi-tagging strategy") {
+		t.Fatalf("assistant narration leaked into preferences extractor input: %q", capturedPrefsInput)
+	}
+	if !strings.Contains(capturedPrefsInput, "debug why the token refresh is failing") {
+		t.Fatalf("user's own turn missing from preferences extractor input: %q", capturedPrefsInput)
+	}
+}
+
 func TestExtractHandlerEpisodesDisabled(t *testing.T) {
 	s, h, evID := setup(t)
 	if _, err := s.DB.Exec(`UPDATE actors SET episode_strategy='disabled' WHERE actor_id='alice'`); err != nil {
