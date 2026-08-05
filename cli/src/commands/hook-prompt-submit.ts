@@ -5,6 +5,7 @@ import { readTranscript, buildTurnsWithActivity, detectTranscriptSource } from '
 import { executePush } from './push';
 import { readStdin } from '../stdin';
 import { hashTurn, loadCursor, saveCursor, pruneStaleCursors } from '../cursor';
+import { lookupClaudeSessionName } from '../claude-session-name';
 import type { Turn } from '../transcript';
 
 interface HookInput {
@@ -120,7 +121,12 @@ export async function executeHookPromptSubmit(input: HookInput): Promise<void> {
   const project = detectProject(workdir);
   const config = loadConfig();
 
-  log.info(`prompt-submit: session=${sessionId} pushing ${newTurns.length} new turns (source=${source || 'unknown'}, project=${project || 'none'})`);
+  // ~/.claude/sessions/*.json is Claude Code-only internal state — never
+  // consult it for other clients sharing this same hook (codex, gemini-cli).
+  const sessionName = source === 'claude-code' ? lookupClaudeSessionName(sessionId) : undefined;
+  const attributes = sessionName ? { session_name: sessionName } : undefined;
+
+  log.info(`prompt-submit: session=${sessionId} pushing ${newTurns.length} new turns (source=${source || 'unknown'}, project=${project || 'none'}${sessionName ? `, session_name=${sessionName}` : ''})`);
 
   await executePush({
     apiUrl: config.apiUrl,
@@ -132,6 +138,7 @@ export async function executeHookPromptSubmit(input: HookInput): Promise<void> {
     workstation: config.workstation,
     workdir,
     source,
+    attributes,
   });
 
   for (const { key } of newEntries) pushedHashes.add(key);

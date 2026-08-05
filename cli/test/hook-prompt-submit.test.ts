@@ -31,19 +31,23 @@ import { pruneStaleCursors } from '../src/cursor';
 describe('hook-prompt-submit', () => {
   const tmpDir = path.join(os.tmpdir(), 'mnemo-hook-test-' + Date.now());
   const cursorDir = path.join(tmpDir, 'cursors');
+  const claudeSessionsDir = path.join(tmpDir, 'claude-sessions');
   let transcriptPath: string;
 
   beforeEach(() => {
     vi.clearAllMocks();
     mockFetch.mockResolvedValue({ ok: true });
     fs.mkdirSync(tmpDir, { recursive: true });
+    fs.mkdirSync(claudeSessionsDir, { recursive: true });
     process.env.MNEMO_CURSOR_DIR = cursorDir;
+    process.env.MNEMO_CLAUDE_SESSIONS_DIR = claudeSessionsDir;
     transcriptPath = path.join(tmpDir, 'transcript.jsonl');
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     delete process.env.MNEMO_CURSOR_DIR;
+    delete process.env.MNEMO_CLAUDE_SESSIONS_DIR;
   });
 
   function writeTranscript(lines: object[]) {
@@ -69,6 +73,62 @@ describe('hook-prompt-submit', () => {
     expect(body.turns).toContainEqual({ role: 'assistant', content: 'hi there' });
     expect(body.source).toBe('claude-code');
     expect(body.project).toBe('test-project');
+  });
+
+  it('tags the push with a user-renamed Claude Code session name', async () => {
+    writeTranscript([{ type: 'user', message: { content: 'hello' } }]);
+    fs.writeFileSync(
+      path.join(claudeSessionsDir, '111.json'),
+      JSON.stringify({ sessionId: 'named-session', name: "tiago's assistant" }),
+    );
+
+    await executeHookPromptSubmit({
+      session_id: 'named-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.attributes).toEqual({ session_name: "tiago's assistant" });
+  });
+
+  it('does not tag the push with an auto-derived default session name', async () => {
+    writeTranscript([{ type: 'user', message: { content: 'hello' } }]);
+    fs.writeFileSync(
+      path.join(claudeSessionsDir, '111.json'),
+      JSON.stringify({ sessionId: 'derived-session', name: 'mnemo-6a', nameSource: 'derived' }),
+    );
+
+    await executeHookPromptSubmit({
+      session_id: 'derived-session',
+      transcript_path: transcriptPath,
+      cwd: tmpDir,
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.attributes).toBeUndefined();
+  });
+
+  it('does not consult Claude Code session state for a gemini-cli push, even if a matching file exists', async () => {
+    // Same hook command serves multiple integrations (claude-code, codex, gemini-cli) — the
+    // Claude-Code-only session-name lookup must never run for a non-claude-code source.
+    fs.writeFileSync(
+      path.join(claudeSessionsDir, '111.json'),
+      JSON.stringify({ sessionId: 'gemini-session', name: 'should-not-be-used' }),
+    );
+
+    await executeHookPromptSubmit({
+      session_id: 'gemini-session',
+      cwd: tmpDir,
+      hook_event_name: 'AfterAgent',
+      timestamp: '2026-05-06T15:10:00.000Z',
+      prompt: 'write a plan',
+      prompt_response: 'here is the plan',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.source).toBe('gemini-cli');
+    expect(body.attributes).toBeUndefined();
   });
 
   it('skips push when session_id missing', async () => {
